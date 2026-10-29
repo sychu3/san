@@ -1,0 +1,167 @@
+import type { Card, GameView, PlayerId, Request, Response } from '../engine/types';
+import { cardLabel } from '../data/cardMeta';
+import { CardView } from './CardView';
+
+interface Props {
+  view: GameView;
+  request: Request;
+  humanId: PlayerId;
+  selectedCards: number[];
+  selectedPlayers: PlayerId[];
+  onTogglePlayer: (id: PlayerId) => void;
+  onRespond: (response: Response) => void;
+}
+
+function findVisibleCard(view: GameView, targetId: PlayerId, cardId: number): Card | null {
+  const target = view.players[targetId];
+  if (!target) return null;
+  const equips = [target.equips.weapon, target.equips.armor, target.equips.horsePlus, target.equips.horseMinus];
+  for (const card of equips) {
+    if (card && card.id === cardId) return card;
+  }
+  return target.judgeZone.find((card) => card.id === cardId) ?? null;
+}
+
+export function PromptPanel({
+  view,
+  request,
+  humanId,
+  selectedCards,
+  selectedPlayers,
+  onTogglePlayer,
+  onRespond,
+}: Props) {
+  const self = view.players[humanId];
+
+  return (
+    <section className="panel prompt" aria-live="polite">
+      <div className="prompt__head">
+        <span className="panel__title">行動</span>
+        <span className="prompt__context">{request.kind === 'action' ? request.context : request.prompt}</span>
+      </div>
+
+      {request.kind === 'action' && (
+        <>
+          <p className="prompt__hint">{request.prompt}</p>
+          <div className="option-grid">
+            {request.options.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={`option ${option.kind === 'pass' ? 'option--pass' : ''}`}
+                onClick={() => onRespond({ type: 'option', optionId: option.id })}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {request.kind === 'response' && (
+        <>
+          <p className="prompt__hint">{request.prompt}</p>
+          <div className="option-grid">
+            {request.options.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={`option ${option.kind === 'pass' ? 'option--pass' : ''}`}
+                onClick={() => onRespond({ type: 'option', optionId: option.id })}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {request.kind === 'chooseCards' && (
+        <>
+          <p className="prompt__hint">
+            {request.prompt}（已選 {selectedCards.length}／{request.max} 張）
+          </p>
+          <p className="prompt__small">請從下方手牌中點選，至少 {request.min} 張。</p>
+          <button
+            type="button"
+            className="option option--confirm"
+            disabled={selectedCards.length < request.min || selectedCards.length > request.max}
+            onClick={() => onRespond({ type: 'cards', cards: selectedCards })}
+          >
+            確認棄牌
+          </button>
+        </>
+      )}
+
+      {request.kind === 'chooseCard' && (
+        <>
+          <p className="prompt__hint">{request.prompt}</p>
+          <div className="option-grid">
+            {request.cards.map((cardId) => {
+              const card = findVisibleCard(view, request.target, cardId);
+              if (!card) return null;
+              return (
+                <button
+                  key={cardId}
+                  type="button"
+                  className="option option--card"
+                  onClick={() => onRespond({ type: 'card', card: cardId })}
+                >
+                  <CardView card={card} compact />
+                  <span>{cardLabel(card.name)}</span>
+                </button>
+              );
+            })}
+            {request.allowRandomHand && (
+              <button
+                type="button"
+                className="option option--random"
+                onClick={() => onRespond({ type: 'card', card: -1 })}
+              >
+                盲選手牌（{request.handCount} 張）
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {request.kind === 'choosePlayers' && (
+        <>
+          <p className="prompt__hint">
+            {request.prompt}（已選 {selectedPlayers.length}／{request.max} 名）
+          </p>
+          <div className="option-grid">
+            {request.candidates.map((id) => {
+              const player = view.players[id];
+              if (!player) return null;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={`option ${selectedPlayers.includes(id) ? 'option--selected' : ''}`}
+                  onClick={() => onTogglePlayer(id)}
+                >
+                  {player.generalName}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              className="option option--confirm"
+              disabled={selectedPlayers.length < request.min || selectedPlayers.length > request.max}
+              onClick={() => onRespond({ type: 'players', players: selectedPlayers })}
+            >
+              確認選擇
+            </button>
+          </div>
+        </>
+      )}
+
+      {self && (
+        <p className="prompt__small">
+          你的身份：{self.role === 'lord' ? '主公' : self.role === 'loyal' ? '忠臣' : self.role === 'rebel' ? '反賊' : '內奸'}
+        </p>
+      )}
+    </section>
+  );
+}

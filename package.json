@@ -1,0 +1,35 @@
+{
+  "name": "sanguosha-junzheng",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "非官方三國殺・軍爭篇 Web 版（1 人對 4 AI）",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "packageManager": "npm@11.6.2",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "sim": "vitest run src/tests/simulation.test.ts",
+    "audit": "npm audit --audit-level=high",
+    "verify": "npm run test && npm run build && npm run audit"
+  },
+  "dependencies": {
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "@types/react": "19.1.8",
+    "@types/react-dom": "19.1.6",
+    "@vitejs/plugin-react": "4.5.2",
+    "typescript": "5.8.3",
+    "vite": "6.4.5",
+    "vitest": "4.1.12"
+  }
+}
