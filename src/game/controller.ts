@@ -11,6 +11,7 @@ import { createGame, viewFor, type CreateGameOptions } from '../engine/state';
 import { runGame } from '../engine/engine';
 import { createAiMemory, decide, type AiMemory } from '../ai/policy';
 import type { RngState } from '../engine/rng';
+import { AI_RNG_XOR, createSaveFile, type SaveFile, type SavedResponse } from './save';
 
 /**
  * 遊戲驅動器：把 generator 引擎與 UI 連接起來。
@@ -32,6 +33,7 @@ export class GameController {
   private lastHumanRequestId: number | null = null;
   private difficulty: Difficulty;
   private readonly aiMemory = new Map<PlayerId, AiMemory>();
+  private readonly responses: SavedResponse[] = [];
 
   constructor(
     options: CreateGameOptions & { humanId?: PlayerId; godMode?: boolean; difficulty?: Difficulty } = {},
@@ -43,7 +45,7 @@ export class GameController {
     }
     this.godMode = options.godMode ?? false;
     this.difficulty = options.difficulty ?? 'normal';
-    this.aiRng = { rngState: (this.state.seed ^ 0x9e3779b9) >>> 0 || 1 };
+    this.aiRng = { rngState: (this.state.seed ^ AI_RNG_XOR) >>> 0 || 1 };
     this.generator = runGame(this.state);
     this.snapshot = this.makeView();
     this.start();
@@ -105,7 +107,22 @@ export class GameController {
       throw new Error('拒絕過期或未授權的回應');
     }
     this.lastHumanRequestId = null;
+    this.responses.push({ requestId, response });
     this.advance(response);
+  }
+
+  /** 目前為止的人類回應；可序列化為存檔。 */
+  getResponses(): readonly SavedResponse[] {
+    return this.responses;
+  }
+
+  getSaveFile(): SaveFile {
+    return createSaveFile({
+      seed: this.state.seed,
+      humanId: this.humanId,
+      difficulty: this.difficulty,
+      responses: [...this.responses],
+    });
   }
 
   private start(): void {

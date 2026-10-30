@@ -18,7 +18,7 @@ import { randomSeed, shuffle } from './rng';
 import { nextAliveId } from './rules';
 import { hasSkill, skillsOf } from './skills';
 
-export const GAME_VERSION = '0.5.0-m4';
+export const GAME_VERSION = '0.6.0-m5';
 
 export interface CreateGameOptions {
   seed?: number;

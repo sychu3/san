@@ -5,6 +5,8 @@ import { Seat } from './Seat';
 interface Props {
   view: GameView;
   humanId: PlayerId;
+  /** 最近受到傷害的玩家；用於閃動提示。 */
+  hitId?: PlayerId | null;
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -18,7 +20,7 @@ const PHASE_LABELS: Record<string, string> = {
 
 const REL_CLASS = ['self', 'next', 'top-right', 'top-left', 'prev'] as const;
 
-export function GameTable({ view, humanId }: Props) {
+export function GameTable({ view, humanId, hitId = null }: Props) {
   const turnPlayer = view.players[view.turn];
   const waitingFor = view.waitingFor;
 
@@ -36,6 +38,7 @@ export function GameTable({ view, humanId }: Props) {
               isSelf={player.id === humanId}
               waiting={waitingFor === player.id}
               compact={relative !== 0}
+              hit={hitId === player.id}
             />
           </div>
         );

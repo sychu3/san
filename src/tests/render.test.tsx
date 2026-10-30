@@ -12,7 +12,18 @@ describe('UI 渲染煙霧測試', () => {
     expect(html).toContain('三國殺');
     expect(html).toContain('你的手牌');
     expect(html).toContain('對局紀錄');
+    expect(html).toContain('設定');
+    expect(html).toContain('存檔');
     expect(html).not.toContain('dangerouslySetInnerHTML');
+  });
+
+  it('Seat 受到傷害時會加上閃動 class', () => {
+    const state = createGame({ seed: 1 });
+    const view = viewFor(state, 0);
+    const html = renderToString(
+      <Seat player={view.players[0]!} isTurn isSelf waiting={false} hit />,
+    );
+    expect(html).toContain('seat--hit');
   });
 
   it('Seat 會顯示判定區的延時錦囊', () => {

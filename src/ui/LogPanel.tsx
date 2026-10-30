@@ -26,7 +26,7 @@ export function LogPanel({ entries }: Props) {
   return (
     <section className="panel log" aria-label="對局紀錄">
       <div className="panel__title">對局紀錄</div>
-      <div className="log__body" ref={ref}>
+      <div className="log__body" ref={ref} role="log" aria-live="polite" aria-relevant="additions">
         {entries.map((entry) => (
           <p key={entry.seq} className={`log__line ${KIND_CLASS[entry.kind] ?? ''}`}>
             {entry.text}

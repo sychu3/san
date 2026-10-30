@@ -9,6 +9,8 @@ interface Props {
   isSelf: boolean;
   waiting: boolean;
   compact?: boolean;
+  /** 剛受到傷害，短暫閃動。 */
+  hit?: boolean;
 }
 
 const KINGDOM_CLASS: Record<string, string> = {
@@ -24,7 +26,7 @@ function equipsOf(player: PlayerView): Card[] {
   );
 }
 
-export function Seat({ player, isTurn, isSelf, waiting, compact = false }: Props) {
+export function Seat({ player, isTurn, isSelf, waiting, compact = false, hit = false }: Props) {
   const roleText = player.role ? ROLE_LABELS[player.role] ?? player.role : '身份未知';
   const hpCells = Array.from({ length: player.maxHp }, (_, index) => index < player.hp);
   const equips = equipsOf(player);
@@ -39,6 +41,7 @@ export function Seat({ player, isTurn, isSelf, waiting, compact = false }: Props
         !player.alive ? 'seat--dead' : '',
         isSelf ? 'seat--self' : '',
         compact ? 'seat--compact' : '',
+        hit ? 'seat--hit' : '',
       ]
         .filter(Boolean)
         .join(' ')}

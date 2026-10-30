@@ -1,9 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PlayerId, Response } from './engine/types';
 import { winnerText } from './engine/state';
 import { randomSeed } from './engine/rng';
 import { ROLE_LABELS } from './data/generals';
 import { GameController } from './game/controller';
+import { buildReplay, type ReplayData } from './game/replay';
+import { parseSave, SAVE_KEY, serializeSave } from './game/save';
+import {
+  loadSettings,
+  persistSettings,
+  type AnimationMode,
+  type Settings,
+} from './game/settings';
+import { playSound } from './audio/sounds';
 import { GameTable } from './ui/GameTable';
 import { PromptPanel } from './ui/PromptPanel';
 import { LogPanel } from './ui/LogPanel';
@@ -26,19 +35,89 @@ const ROLE_GOAL: Record<string, string> = {
 
 export default function App() {
   const [controller, setController] = useState(() => new GameController());
-  const [view, setView] = useState(() => controller.getView());
+  const [liveView, setLiveView] = useState(() => controller.getView());
   const [selectedCards, setSelectedCards] = useState<number[]>([]);
   const [selectedPlayers, setSelectedPlayers] = useState<PlayerId[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  const [showSettings, setShowSettings] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [hitId, setHitId] = useState<PlayerId | null>(null);
+  const [replay, setReplay] = useState<ReplayData | null>(null);
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const lastLogSeq = useRef(0);
+  const prevHp = useRef<number[]>([]);
 
   useEffect(() => {
-    const unsubscribe = controller.subscribe(() => setView(controller.getView()));
+    const unsubscribe = controller.subscribe(() => setLiveView(controller.getView()));
     return unsubscribe;
   }, [controller]);
 
+  useEffect(() => {
+    persistSettings(settings);
+  }, [settings]);
+
+  const view = replay ? replay.views[Math.min(replayIndex, replay.views.length - 1)]! : liveView;
   const pending = view.pending;
   const pendingId = pending?.id ?? null;
+
+  // 音效：依新出現的日誌種類播放合成音。
+  useEffect(() => {
+    if (replay) return;
+    const entries = view.log.filter((entry) => entry.seq > lastLogSeq.current);
+    for (const entry of entries) {
+      if (entry.kind === 'damage') playSound('damage', settings.sound);
+      else if (entry.kind === 'death') playSound('death', settings.sound);
+      else if (entry.kind === 'win') playSound('win', settings.sound);
+      else if (entry.kind === 'play') playSound('play', settings.sound);
+    }
+    lastLogSeq.current = view.log.length > 0 ? view.log[view.log.length - 1]!.seq : 0;
+  }, [view.log, settings.sound, replay]);
+
+  // 受傷閃動：比對體力變化。
+  useEffect(() => {
+    if (replay) return;
+    const currentHp = view.players.map((player) => player.hp);
+    const prev = prevHp.current;
+    const damaged = view.players.find(
+      (player) => prev[player.id] !== undefined && currentHp[player.id]! < prev[player.id]!,
+    );
+    prevHp.current = currentHp;
+    if (damaged && settings.animation !== 'off') {
+      setHitId(damaged.id);
+      const timer = window.setTimeout(() => setHitId(null), 700);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [view.players, settings.animation, replay]);
+
+  // Esc 關閉彈窗。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setShowHelp(false);
+      setShowSettings(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // 重播播放。
+  useEffect(() => {
+    if (!replay || !playing) return undefined;
+    const timer = window.setInterval(() => {
+      setReplayIndex((index) => {
+        if (index >= replay.views.length - 1) {
+          setPlaying(false);
+          return index;
+        }
+        return index + 1;
+      });
+    }, settings.animation === 'off' ? 150 : 700);
+    return () => window.clearInterval(timer);
+  }, [replay, playing, settings.animation]);
 
   useEffect(() => {
     setSelectedCards([]);
@@ -55,8 +134,10 @@ export default function App() {
 
   const send = useCallback(
     (response: Response) => {
+      if (replay) return;
       const current = controller.getView().pending;
       if (!current) return;
+      playSound('click', settings.sound);
       try {
         controller.respond(current.id, response);
         setError(null);
@@ -64,7 +145,7 @@ export default function App() {
         setError(err instanceof Error ? err.message : '操作失敗');
       }
     },
-    [controller],
+    [controller, replay, settings.sound],
   );
 
   const toggleCard = (id: number) => {
@@ -90,14 +171,63 @@ export default function App() {
   const restart = () => {
     const next = new GameController({ seed: randomSeed(), difficulty: controller.getDifficulty() });
     setController(next);
-    setView(next.getView());
+    setLiveView(next.getView());
     setSelectedCards([]);
     setSelectedPlayers([]);
     setError(null);
+    setReplay(null);
+    setPlaying(false);
+    lastLogSeq.current = 0;
+    prevHp.current = [];
   };
 
+  const saveGame = () => {
+    try {
+      localStorage.setItem(SAVE_KEY, serializeSave(controller.getSaveFile()));
+      setNotice(`已存檔（seed ${controller.state.seed}）。讀檔後可重播這局。`);
+    } catch {
+      setNotice('無法寫入瀏覽器儲存空間。');
+    }
+  };
+
+  const loadReplay = () => {
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(SAVE_KEY);
+    } catch {
+      raw = null;
+    }
+    const save = parseSave(raw);
+    if (!save) {
+      setNotice('沒有可用存檔，或存檔版本不相容。');
+      return;
+    }
+    try {
+      const data = buildReplay(save);
+      setReplay(data);
+      setReplayIndex(0);
+      setPlaying(false);
+      setNotice(null);
+    } catch {
+      setNotice('存檔與本局流程不符，無法重播。');
+    }
+  };
+
+  const exitReplay = () => {
+    setReplay(null);
+    setPlaying(false);
+    setReplayIndex(0);
+  };
+
+  const setAnimation = (animation: AnimationMode) => {
+    setSettings((current) => ({ ...current, animation }));
+  };
+
+  const animationClass =
+    settings.animation === 'off' ? 'app--anim-off' : settings.animation === 'fast' ? 'app--anim-fast' : '';
+
   return (
-    <div className="app">
+    <div className={`app ${animationClass}`}>
       <header className="topbar">
         <div className="topbar__brand">
           <h1>三國殺</h1>
@@ -128,18 +258,80 @@ export default function App() {
           >
             上帝視角
           </button>
+          <button type="button" className="ghost-btn" onClick={saveGame} disabled={Boolean(replay)}>
+            存檔
+          </button>
+          <button type="button" className="ghost-btn" onClick={loadReplay}>
+            讀檔重播
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => setShowSettings(true)}>
+            設定
+          </button>
           <button type="button" className="ghost-btn" onClick={() => setShowHelp(true)}>
             規則
           </button>
-          <button type="button" className="primary-btn" onClick={restart}>
+          <button type="button" className="primary-btn" onClick={restart} disabled={Boolean(replay)}>
             新局
           </button>
         </div>
       </header>
 
+      {replay && (
+        <div className="replaybar" role="region" aria-label="重播控制">
+          <span className="replaybar__label">
+            重播 seed {view.seed}（第 {replayIndex + 1}／{replay.views.length} 步）
+          </span>
+          <div className="replaybar__actions">
+            <button type="button" className="ghost-btn" onClick={() => setReplayIndex((i) => Math.max(0, i - 1))}>
+              上一步
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={() => setPlaying((value) => !value)}
+              disabled={replayIndex >= replay.views.length - 1}
+            >
+              {playing ? '暫停' : '播放'}
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={() => setReplayIndex((i) => Math.min(replay.views.length - 1, i + 1))}
+            >
+              下一步
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={() => setReplayIndex(replay.views.length - 1)}
+            >
+              跳到最後
+            </button>
+            <button type="button" className="primary-btn" onClick={exitReplay}>
+              離開重播
+            </button>
+          </div>
+        </div>
+      )}
+
+      {notice && (
+        <div className="notice" role="status">
+          <span>{notice}</span>
+          <button type="button" className="ghost-btn" onClick={() => setNotice(null)}>
+            關閉
+          </button>
+        </div>
+      )}
+
       <main className="layout">
         <div className="board">
-          <GameTable view={view} humanId={controller.humanId} />
+          <GameTable view={view} humanId={controller.humanId} hitId={hitId} />
+
+          {pending?.kind === 'response' && pending.need === 'peach' && (
+            <div className="dying-banner" role="alert">
+              瀕死！請決定是否救助
+            </div>
+          )}
 
           <section className="hand" aria-label="你的手牌">
             <div className="hand__head">
@@ -197,7 +389,12 @@ export default function App() {
         </div>
 
         <aside className="sidebar">
-          {pending ? (
+          {replay ? (
+            <section className="panel prompt">
+              <div className="panel__title">重播</div>
+              <p className="prompt__hint">重播模式：使用上方控制列前進／後退，不會影響實際對局。</p>
+            </section>
+          ) : pending ? (
             <PromptPanel
               view={view}
               request={pending}
@@ -264,6 +461,56 @@ export default function App() {
                 也只取得自己的視角。
               </p>
               <p className="modal__note">此為非官方、非商業的規則學習用實作。三國殺為其權利人所有。</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSettings && (
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="設定"
+          onClick={() => setShowSettings(false)}
+        >
+          <div className="modal__card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal__head">
+              <h2>設定</h2>
+              <button type="button" className="ghost-btn" onClick={() => setShowSettings(false)} aria-label="關閉">
+                關閉
+              </button>
+            </div>
+            <div className="modal__body">
+              <h3>音效</h3>
+              <p>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={settings.sound}
+                    onChange={(event) =>
+                      setSettings((current) => ({ ...current, sound: event.target.checked }))
+                    }
+                  />{' '}
+                  播放合成音效（預設關閉；開啟後才建立 AudioContext）
+                </label>
+              </p>
+              <h3>動畫</h3>
+              <div className="settings__row">
+                {(['full', 'fast', 'off'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`ghost-btn ${settings.animation === mode ? 'ghost-btn--on' : ''}`}
+                    onClick={() => setAnimation(mode)}
+                  >
+                    {mode === 'full' ? '完整' : mode === 'fast' ? '快速' : '關閉'}
+                  </button>
+                ))}
+              </div>
+              <p className="modal__note">
+                若系統開啟「減少動態效果」，可將動畫設為關閉。設定只存在本機瀏覽器。
+              </p>
             </div>
           </div>
         </div>
