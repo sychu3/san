@@ -92,6 +92,9 @@ function isSlashName(name: CardName): boolean {
   return name === 'slash' || name === 'fire_slash' || name === 'thunder_slash';
 }
 
+/** 放在判定區的延時錦囊：移掉會讓持有者變好，拆敵人時反而是幫對方。 */
+const JUDGE_TIME_TRICKS = new Set<CardName>(['indulgence', 'supply_shortage', 'lightning']);
+
 function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng: RngState): Response {
   const self = selfOf(view);
   const options = request.options;
@@ -147,6 +150,19 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
             score += 10;
           }
           if (target.equips.weapon) score += 8;
+          // 敵人只剩判定區的延時錦囊可拆時，拆掉是幫對方解除負面效果，放棄。
+          const hasEquip = Boolean(
+            target.equips.weapon ||
+              target.equips.armor ||
+              target.equips.horsePlus ||
+              target.equips.horseMinus,
+          );
+          const onlyJudgeTrick =
+            base > 0 &&
+            !hasEquip &&
+            target.handCount === 0 &&
+            target.judgeZone.some((card) => JUDGE_TIME_TRICKS.has(card.name));
+          if (onlyJudgeTrick) score -= 120;
         }
       }
       if (name === 'duel') {
@@ -416,6 +432,7 @@ function chooseCard(
   view: GameView,
   rng: RngState,
 ): Response {
+  const self = selfOf(view);
   const target = view.players[request.target];
   if (!target) return { type: 'card', card: -1 };
 
@@ -426,17 +443,39 @@ function chooseCard(
   }
   visible.push(...target.judgeZone);
 
-  const preferred = visible.filter((card) => request.cards.includes(card.id));
+  const enemy = roleEnemyScore(view, self, target);
+  const preferred = visible
+    .filter((card) => request.cards.includes(card.id))
+    .map((card) => ({ card, score: removalScore(card, enemy) }))
+    .sort((a, b) => b.score - a.score);
+
   if (preferred.length > 0) {
-    // 優先拆／拿防具與武器。
-    preferred.sort((a, b) => equipPriority(b) - equipPriority(a));
-    const pick = preferred.find(() => nextFloat(rng) < 0.85) ?? preferred[0]!;
-    return { type: 'card', card: pick.id };
+    const best = preferred[0]!;
+    // 拆敵人判定區的延時錦囊等於幫對方；寧可盲選手牌。
+    if (best.score <= 0 && request.allowRandomHand) return { type: 'card', card: -1 };
+    const positive = preferred.filter((item) => item.score > 0);
+    const pool = positive.length > 0 ? positive : preferred;
+    const pick = pool.find(() => nextFloat(rng) < 0.85) ?? pool[0]!;
+    return { type: 'card', card: pick.card.id };
   }
   if (request.allowRandomHand) return { type: 'card', card: -1 };
 
   const fallback = request.cards[0];
   return { type: 'card', card: fallback ?? -1 };
+}
+
+/** 拆／拿目標區域內一張牌的價值；負分代表做了反而幫到對方。 */
+function removalScore(card: Card, enemy: number): number {
+  const meta = CARD_META[card.name];
+  if (meta.type === 'equip') {
+    // 拆敵人的裝備是好事，拆隊友的裝備是壞事。
+    return equipPriority(card) + (enemy > 0 ? 4 : -6);
+  }
+  if (JUDGE_TIME_TRICKS.has(card.name)) {
+    // 判定區的延時錦囊移掉會讓持有者變好。
+    return enemy > 0 ? -8 : 6;
+  }
+  return 1;
 }
 
 function equipPriority(card: Card): number {
