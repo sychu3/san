@@ -42,18 +42,17 @@ describe('完整牌庫', () => {
     expect(counts.nullification).toBe(7);
   });
 
-  it('M1 牌堆只包含已實作的牌', () => {
+  it('M2 起所有牌都已實作，m1 與 full 牌堆等價', () => {
     const deck = createDeck('m1');
-    expect(deck.length).toBeGreaterThan(100);
-    expect(deck.length).toBeLessThan(FULL_DECK.length);
+    expect(deck).toHaveLength(FULL_DECK.length);
     for (const card of deck) {
       expect(CARD_META[card.name].implemented).toBe(true);
     }
   });
 
-  it('完整牌堆包含未實作的牌', () => {
+  it('完整牌堆 160 張且全部已實作', () => {
     const deck = createDeck('full');
     expect(deck).toHaveLength(160);
-    expect(deck.some((card) => !CARD_META[card.name].implemented)).toBe(true);
+    expect(deck.every((card) => CARD_META[card.name].implemented)).toBe(true);
   });
 });

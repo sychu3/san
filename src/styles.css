@@ -527,6 +527,24 @@ button {
   border-color: rgba(224, 138, 127, 0.4);
 }
 
+.seat__judge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 7px;
+  flex-wrap: wrap;
+}
+
+.seat__judge-label {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: #d6b86a;
+  border: 1px solid rgba(214, 184, 106, 0.45);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 15px;
+}
+
 .seat__equips {
   display: flex;
   gap: 4px;

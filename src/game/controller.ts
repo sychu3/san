@@ -141,6 +141,8 @@ function fallbackResponse(request: Request): Response {
       return { type: 'players', players: request.candidates.slice(0, request.min) };
     case 'chooseCard':
       return { type: 'card', card: request.allowRandomHand ? -1 : (request.cards[0] ?? -1) };
+    case 'chooseRevealed':
+      return { type: 'card', card: request.cards[0]?.id ?? -1 };
     default:
       return { type: 'pass' };
   }

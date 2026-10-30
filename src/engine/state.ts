@@ -17,7 +17,7 @@ import { getGeneral, MVP_GENERAL_IDS, ROLE_LABELS } from '../data/generals';
 import { randomSeed, shuffle } from './rng';
 import { nextAliveId } from './rules';
 
-export const GAME_VERSION = '0.1.0-m1';
+export const GAME_VERSION = '0.2.0-m2';
 
 export interface CreateGameOptions {
   seed?: number;
@@ -59,7 +59,7 @@ export function createGame(options: CreateGameOptions = {}): GameState {
 
   const roles = shuffle([...FIVE_PLAYER_ROLES], rng);
   const generals = shuffle([...generalIds], rng);
-  const deck = shuffle(createDeck(options.pool ?? 'm1'), rng);
+  const deck = shuffle(createDeck(options.pool ?? 'full'), rng);
 
   const players: PlayerState[] = [];
   for (let id = 0; id < 5; id += 1) {
@@ -107,6 +107,7 @@ export function createGame(options: CreateGameOptions = {}): GameState {
     log: [],
     logSeq: 0,
     requestSeq: 0,
+    useSeq: 0,
     pending: null,
   };
 
@@ -326,7 +327,12 @@ function cloneRequest(request: Request): Request {
   if (request.kind === 'response') {
     return {
       ...request,
-      options: request.options.map((option) => ({ ...option, cards: [...option.cards] })),
+      targets: request.targets ? [...request.targets] : undefined,
+      options: request.options.map((option) => ({
+        ...option,
+        cards: [...option.cards],
+        targets: option.targets ? [...option.targets] : undefined,
+      })),
     };
   }
   if (request.kind === 'chooseCards') {
@@ -334,6 +340,9 @@ function cloneRequest(request: Request): Request {
   }
   if (request.kind === 'choosePlayers') {
     return { ...request, candidates: [...request.candidates] };
+  }
+  if (request.kind === 'chooseRevealed') {
+    return { ...request, cards: request.cards.map(snapshotCard) };
   }
   return { ...request, cards: [...request.cards] };
 }

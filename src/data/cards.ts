@@ -168,10 +168,10 @@ export function getCard(id: number): Card {
 }
 
 /**
- * M1 牌堆：只包含引擎已實作的牌。
- * 完整牌堆仍然保留在 FULL_DECK，方便 M2 直接切換。
+ * 牌堆。M2 起所有牌都已實作，`m1` 與 `full` 等價；
+ * 保留 `m1` 僅為舊測試與舊存檔相容。
  */
-export function createDeck(pool: 'm1' | 'full' = 'm1'): Card[] {
+export function createDeck(pool: 'm1' | 'full' = 'full'): Card[] {
   if (pool === 'full') return [...FULL_DECK];
   return FULL_DECK.filter((card) => CARD_META[card.name].implemented);
 }

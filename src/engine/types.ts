@@ -71,6 +71,25 @@ export interface Card {
   rank: Rank;
 }
 
+/**
+ * 一次「使用牌」的完整脈絡。
+ *
+ * `card` / `cards` 是實際消耗的實體牌；`name` / `suit` / `rank` / `nature`
+ * 是本次使用「視為」的牌。丈八蛇矛、武聖等轉化牌都走同一個結構。
+ */
+export interface CardUse {
+  id: number;
+  source: PlayerId;
+  card: Card;
+  cards: Card[];
+  name: CardName;
+  suit: Suit;
+  rank: Rank;
+  nature: Nature;
+  targets: PlayerId[];
+  skill?: string;
+}
+
 export type Role = 'lord' | 'loyal' | 'rebel' | 'spy';
 export type Kingdom = 'wei' | 'shu' | 'wu' | 'qun';
 export type Gender = 'male' | 'female';
@@ -154,6 +173,7 @@ export interface GameState {
   log: LogEntry[];
   logSeq: number;
   requestSeq: number;
+  useSeq: number;
   pending: Request | null;
 }
 
@@ -181,9 +201,10 @@ export interface ResponseOption {
   cards: number[];
   asCard?: CardName;
   skill?: string;
+  targets?: PlayerId[];
 }
 
-export type ResponseNeed = 'shan' | 'peach' | 'sha' | 'wuxie';
+export type ResponseNeed = 'shan' | 'peach' | 'sha' | 'wuxie' | 'choice' | 'card';
 
 interface RequestBase {
   id: number;
@@ -202,6 +223,10 @@ export type Request =
       options: ResponseOption[];
       need: ResponseNeed;
       context: string;
+      /** 無懈可擊等回應需要的被抵消牌資訊。 */
+      cardName?: CardName;
+      source?: PlayerId;
+      targets?: PlayerId[];
     })
   | (RequestBase & {
       kind: 'chooseCards';
@@ -223,6 +248,11 @@ export type Request =
       cards: number[];
       allowRandomHand: boolean;
       handCount: number;
+      reason: string;
+    })
+  | (RequestBase & {
+      kind: 'chooseRevealed';
+      cards: Card[];
       reason: string;
     });
 

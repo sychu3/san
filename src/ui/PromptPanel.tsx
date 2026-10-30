@@ -1,5 +1,6 @@
 import type { Card, GameView, PlayerId, Request, Response } from '../engine/types';
 import { cardLabel, isSlashCard } from '../data/cardMeta';
+import { rankLabel, suitSymbol } from '../engine/engine';
 import { CardView } from './CardView';
 
 interface Props {
@@ -107,14 +108,17 @@ export function PromptPanel({
           <p className="prompt__hint">
             {request.prompt}（已選 {selectedCards.length}／{request.max} 張）
           </p>
-          <p className="prompt__small">請從下方手牌中點選，至少 {request.min} 張。</p>
+          <p className="prompt__small">
+            請從下方手牌中點選，需選 {request.min}
+            {request.max !== request.min ? `–${request.max}` : ''} 張。
+          </p>
           <button
             type="button"
             className="option option--confirm"
             disabled={selectedCards.length < request.min || selectedCards.length > request.max}
             onClick={() => onRespond({ type: 'cards', cards: selectedCards })}
           >
-            確認棄牌
+            確認選擇
           </button>
         </>
       )}
@@ -147,6 +151,28 @@ export function PromptPanel({
                 盲選手牌（{request.handCount} 張）
               </button>
             )}
+          </div>
+        </>
+      )}
+
+      {request.kind === 'chooseRevealed' && (
+        <>
+          <p className="prompt__hint">{request.prompt}</p>
+          <div className="option-grid">
+            {request.cards.map((card) => (
+              <button
+                key={card.id}
+                type="button"
+                className="option option--card"
+                onClick={() => onRespond({ type: 'card', card: card.id })}
+              >
+                <CardView card={card} compact />
+                <span>
+                  {cardLabel(card.name)} {suitSymbol(card.suit)}
+                  {rankLabel(card.rank)}
+                </span>
+              </button>
+            ))}
           </div>
         </>
       )}

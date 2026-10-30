@@ -49,6 +49,8 @@ function cardValue(name: CardName): number {
       return 85;
     case 'dodge':
       return 70;
+    case 'nullification':
+      return 65;
     case 'wine':
       return 35;
     case 'dismantle':
@@ -58,6 +60,25 @@ function cardValue(name: CardName): number {
     case 'fire_slash':
     case 'thunder_slash':
       return 40;
+    case 'duel':
+    case 'fire_attack':
+      return 58;
+    case 'barbarian':
+    case 'arrows':
+      return 52;
+    case 'peach_garden':
+      return 62;
+    case 'harvest':
+      return 60;
+    case 'collateral':
+      return 50;
+    case 'iron_chain':
+      return 42;
+    case 'indulgence':
+    case 'supply_shortage':
+      return 56;
+    case 'lightning':
+      return 20;
     default:
       return CARD_META[name].type === 'equip' ? 45 : 30;
   }
@@ -65,6 +86,10 @@ function cardValue(name: CardName): number {
 
 function jitter(rng: RngState, amount = 6): number {
   return nextFloat(rng) * amount;
+}
+
+function isSlashName(name: CardName): boolean {
+  return name === 'slash' || name === 'fire_slash' || name === 'thunder_slash';
 }
 
 function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng: RngState): Response {
@@ -124,6 +149,57 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
           if (target.equips.weapon) score += 8;
         }
       }
+      if (name === 'duel') {
+        if (target) {
+          const enemy = roleEnemyScore(view, self, target);
+          const shaCount = self.hand?.filter((card) => isSlashName(card.name)).length ?? 0;
+          score += enemy > 0 ? 45 + enemy * 0.3 + shaCount * 6 : -60;
+        }
+      }
+      if (name === 'barbarian' || name === 'arrows') {
+        const allies = option.targets.filter((id) => id !== self.id && roleEnemyScore(view, self, view.players[id]!) <= 0);
+        score += 42 + option.targets.length * 5 - allies.length * 30;
+      }
+      if (name === 'peach_garden') {
+        const net = option.targets.reduce((sum, id) => {
+          const player = view.players[id];
+          if (!player || player.hp >= player.maxHp) return sum;
+          const enemy = roleEnemyScore(view, self, player);
+          return sum + (enemy > 0 ? -18 : 18);
+        }, 0);
+        score += 30 + net;
+      }
+      if (name === 'harvest') score += 55;
+      if (name === 'collateral') {
+        const user = view.players[option.targets[0]!];
+        const victim = view.players[option.targets[1]!];
+        if (user && victim) {
+          const a = roleEnemyScore(view, self, user);
+          const b = roleEnemyScore(view, self, victim);
+          score += a > 0 && b > 0 ? 55 : a > 0 ? 15 : -35;
+        }
+      }
+      if (name === 'fire_attack') {
+        if (target) {
+          const enemy = roleEnemyScore(view, self, target);
+          score += enemy > 0 ? 45 + enemy * 0.25 : -40;
+          if (target.handCount > 0) score += 8;
+        }
+      }
+      if (name === 'indulgence') {
+        if (target) score += roleEnemyScore(view, self, target) > 0 ? 55 : -45;
+      }
+      if (name === 'supply_shortage') {
+        if (target) score += roleEnemyScore(view, self, target) > 0 ? 50 : -45;
+      }
+      if (name === 'lightning') {
+        // 閃電是風險牌，血量低時不要放。
+        score += self.hp >= 3 ? 12 : -35;
+      }
+      if (name === 'iron_chain') {
+        if (option.skill === 'recast') score += self.handCount <= 2 ? 25 : 8;
+        else score += 12;
+      }
       if (name === 'slash' || name === 'fire_slash' || name === 'thunder_slash') {
         if (target) {
           const enemy = roleEnemyScore(view, self, target);
@@ -139,6 +215,10 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
             }
             if (target.equips.armor?.name === 'renwang') score -= 15;
           }
+        }
+        // 有實體【殺】時優先使用，不要把兩張手牌浪費在丈八蛇矛上。
+        if (option.skill === 'serpent_spear' && (self.hand ?? []).some((card) => isSlashName(card.name))) {
+          score -= 45;
         }
       }
       if (CARD_META[name].type === 'equip') {
@@ -223,22 +303,88 @@ function chooseResponse(
   }
 
   if (request.need === 'sha') {
-    const slash = options.find(
-      (option) =>
-        option.asCard === 'slash' || option.asCard === 'fire_slash' || option.asCard === 'thunder_slash',
-    );
+    const slash =
+      options.find(
+        (option) =>
+          option.asCard === 'slash' ||
+          option.asCard === 'fire_slash' ||
+          option.asCard === 'thunder_slash',
+      ) ?? options.find((option) => option.skill === 'serpent_spear');
     if (slash) return { type: 'option', optionId: slash.id };
   }
 
   if (request.need === 'wuxie') {
     const wuxie = options.find((option) => option.asCard === 'nullification');
-    if (wuxie && nextFloat(rng) < 0.6) return { type: 'option', optionId: wuxie.id };
+    if (wuxie) {
+      const harmful = request.cardName ? HARMFUL_TRICKS.has(request.cardName) : false;
+      const beneficial = request.cardName ? BENEFICIAL_TRICKS.has(request.cardName) : false;
+      const targets = request.targets ?? [];
+      const affectsSelf = targets.includes(self.id);
+      const affectsAlly = targets.some((id) => {
+        const player = view.players[id];
+        return Boolean(player) && player.id !== self.id && roleEnemyScore(view, self, player) <= 0;
+      });
+      const affectsEnemy = targets.some((id) => {
+        const player = view.players[id];
+        return Boolean(player) && player.id !== self.id && roleEnemyScore(view, self, player) > 0;
+      });
+      let chance = 0.05;
+      if (harmful && affectsSelf) chance = 0.9;
+      else if (harmful && affectsAlly) chance = 0.45;
+      else if (beneficial && affectsEnemy && !affectsSelf) chance = 0.4;
+      else if (beneficial && affectsSelf) chance = 0.9;
+      if (nextFloat(rng) < chance) return { type: 'option', optionId: wuxie.id };
+    }
+  }
+
+  if (request.need === 'choice') {
+    const skills = options.filter((option) => option.kind === 'skill');
+    const discard = skills.find((option) => option.skill === 'discard');
+    const draw = skills.find((option) => option.skill === 'draw');
+    if (discard || draw) {
+      // 雌雄雙股劍：手牌少就讓對方摸，手牌多就棄一張。
+      return { type: 'option', optionId: (self.handCount <= 2 && draw ? draw : discard ?? draw)!.id };
+    }
+    const skill = skills[0];
+    if (skill) {
+      if (skill.skill === 'green_dragon' && !(self.hand ?? []).some((card) => isSlashName(card.name))) {
+        // 沒有實體【殺】時仍可能用丈八蛇矛；讓引擎的選項決定。
+      }
+      if (skill.skill === 'rock_axe' && self.handCount < 2 && pass) {
+        return { type: 'option', optionId: pass.id };
+      }
+      return { type: 'option', optionId: skill.id };
+    }
+  }
+
+  if (request.need === 'card') {
+    const first = options[0];
+    if (first) return { type: 'option', optionId: first.id };
   }
 
   // 未知需求時，保留手牌。
   if (pass) return { type: 'option', optionId: pass.id };
   return { type: 'option', optionId: options[0]!.id };
 }
+
+const HARMFUL_TRICKS = new Set<CardName>([
+  'dismantle',
+  'snatch',
+  'duel',
+  'collateral',
+  'barbarian',
+  'arrows',
+  'fire_attack',
+  'indulgence',
+  'supply_shortage',
+  'lightning',
+]);
+
+const BENEFICIAL_TRICKS = new Set<CardName>([
+  'ex_nihilo',
+  'peach_garden',
+  'harvest',
+]);
 
 function findDyingId(view: GameView): PlayerId | null {
   const pending = view.pending;
@@ -331,6 +477,10 @@ export function decide(view: GameView, request: Request, rng: RngState): Respons
     case 'choosePlayers': {
       const count = Math.max(request.min, Math.min(request.max, request.candidates.length));
       return { type: 'players', players: request.candidates.slice(0, count) };
+    }
+    case 'chooseRevealed': {
+      const best = [...request.cards].sort((a, b) => cardValue(b.name) - cardValue(a.name))[0];
+      return best ? { type: 'card', card: best.id } : { type: 'pass' };
     }
     default:
       return { type: 'pass' };

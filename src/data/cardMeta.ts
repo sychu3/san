@@ -3,8 +3,8 @@ import type { CardMeta, CardName } from '../engine/types';
 /**
  * 卡牌靜態資料。
  *
- * `implemented` 代表 M1 引擎是否已支援該牌的效果。
- * 完整 160 張牌都會存在於資料層；M1 牌堆只會抽到 implemented === true 的牌。
+ * `implemented` 代表引擎是否已支援該牌的效果。
+ * M2 起 160 張牌全部已接入，完整牌堆即為預設牌堆。
  */
 export const CARD_META = {
   slash: { name: 'slash', label: '殺', type: 'basic', nature: 'normal', implemented: true },
@@ -22,29 +22,29 @@ export const CARD_META = {
 
   dismantle: { name: 'dismantle', label: '過河拆橋', type: 'trick', implemented: true },
   snatch: { name: 'snatch', label: '順手牽羊', type: 'trick', implemented: true },
-  duel: { name: 'duel', label: '決鬥', type: 'trick', implemented: false },
-  collateral: { name: 'collateral', label: '借刀殺人', type: 'trick', implemented: false },
+  duel: { name: 'duel', label: '決鬥', type: 'trick', implemented: true },
+  collateral: { name: 'collateral', label: '借刀殺人', type: 'trick', implemented: true },
   ex_nihilo: { name: 'ex_nihilo', label: '無中生有', type: 'trick', implemented: true },
   nullification: {
     name: 'nullification',
     label: '無懈可擊',
     type: 'trick',
-    implemented: false,
+    implemented: true,
   },
-  barbarian: { name: 'barbarian', label: '南蠻入侵', type: 'trick', implemented: false },
-  arrows: { name: 'arrows', label: '萬箭齊發', type: 'trick', implemented: false },
-  peach_garden: { name: 'peach_garden', label: '桃園結義', type: 'trick', implemented: false },
-  harvest: { name: 'harvest', label: '五穀豐登', type: 'trick', implemented: false },
+  barbarian: { name: 'barbarian', label: '南蠻入侵', type: 'trick', implemented: true },
+  arrows: { name: 'arrows', label: '萬箭齊發', type: 'trick', implemented: true },
+  peach_garden: { name: 'peach_garden', label: '桃園結義', type: 'trick', implemented: true },
+  harvest: { name: 'harvest', label: '五穀豐登', type: 'trick', implemented: true },
 
-  lightning: { name: 'lightning', label: '閃電', type: 'delayed', implemented: false },
-  indulgence: { name: 'indulgence', label: '樂不思蜀', type: 'delayed', implemented: false },
-  iron_chain: { name: 'iron_chain', label: '鐵索連環', type: 'trick', implemented: false },
-  fire_attack: { name: 'fire_attack', label: '火攻', type: 'trick', implemented: false },
+  lightning: { name: 'lightning', label: '閃電', type: 'delayed', implemented: true },
+  indulgence: { name: 'indulgence', label: '樂不思蜀', type: 'delayed', implemented: true },
+  iron_chain: { name: 'iron_chain', label: '鐵索連環', type: 'trick', implemented: true },
+  fire_attack: { name: 'fire_attack', label: '火攻', type: 'trick', implemented: true },
   supply_shortage: {
     name: 'supply_shortage',
     label: '兵糧寸斷',
     type: 'delayed',
-    implemented: false,
+    implemented: true,
   },
 
   crossbow: {
@@ -61,7 +61,7 @@ export const CARD_META = {
     type: 'equip',
     subtype: 'weapon',
     range: 2,
-    implemented: false,
+    implemented: true,
   },
   qinggang: {
     name: 'qinggang',
@@ -69,7 +69,7 @@ export const CARD_META = {
     type: 'equip',
     subtype: 'weapon',
     range: 2,
-    implemented: false,
+    implemented: true,
   },
   ice_sword: {
     name: 'ice_sword',
@@ -77,7 +77,7 @@ export const CARD_META = {
     type: 'equip',
     subtype: 'weapon',
     range: 2,
-    implemented: false,
+    implemented: true,
   },
   ancient_scimitar: {
     name: 'ancient_scimitar',
@@ -93,7 +93,7 @@ export const CARD_META = {
     type: 'equip',
     subtype: 'weapon',
     range: 3,
-    implemented: false,
+    implemented: true,
   },
   green_dragon: {
     name: 'green_dragon',
@@ -101,7 +101,7 @@ export const CARD_META = {
     type: 'equip',
     subtype: 'weapon',
     range: 3,
-    implemented: false,
+    implemented: true,
   },
   rock_axe: {
     name: 'rock_axe',
@@ -109,7 +109,7 @@ export const CARD_META = {
     type: 'equip',
     subtype: 'weapon',
     range: 3,
-    implemented: false,
+    implemented: true,
   },
   fan: {
     name: 'fan',
@@ -125,7 +125,7 @@ export const CARD_META = {
     type: 'equip',
     subtype: 'weapon',
     range: 4,
-    implemented: false,
+    implemented: true,
   },
   qilin_bow: {
     name: 'qilin_bow',
@@ -133,7 +133,7 @@ export const CARD_META = {
     type: 'equip',
     subtype: 'weapon',
     range: 5,
-    implemented: false,
+    implemented: true,
   },
 
   eight_diagram: {

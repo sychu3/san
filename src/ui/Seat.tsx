@@ -70,6 +70,15 @@ export function Seat({ player, isTurn, isSelf, waiting, compact = false }: Props
         {!player.alive && <span className="tag tag--dead">陣亡</span>}
       </div>
 
+      {!compact && player.judgeZone.length > 0 && (
+        <div className="seat__judge" title="判定區">
+          <span className="seat__judge-label">判定</span>
+          {player.judgeZone.map((card) => (
+            <CardView key={card.id} card={card} compact />
+          ))}
+        </div>
+      )}
+
       {!compact && equips.length > 0 && (
         <div className="seat__equips">
           {equips.map((card) => (

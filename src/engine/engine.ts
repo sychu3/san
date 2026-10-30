@@ -1,8 +1,11 @@
 import type {
   Card,
+  CardName,
+  CardUse,
   EquipState,
   GameResult,
   GameState,
+  Nature,
   PlayOption,
   PlayerId,
   PlayerState,
@@ -11,8 +14,7 @@ import type {
   ResponseOption,
   ResponseNeed,
 } from './types';
-import { CARD_META, cardLabel, cardMeta, isSlashCard } from '../data/cardMeta';
-import { getCard } from '../data/cards';
+import { CARD_META, cardLabel, isSlashCard } from '../data/cardMeta';
 import { ROLE_LABELS } from '../data/generals';
 import {
   advanceTurn,
@@ -22,6 +24,7 @@ import {
   discardAllCards,
   discardFromHand,
   drawCards,
+  generalOf,
   heal,
   log,
   hasAnyCard,
@@ -31,6 +34,7 @@ import {
   setWinner,
 } from './state';
 import {
+  aliveInSeatOrder,
   attackRange,
   distance,
   handLimit,
@@ -42,8 +46,11 @@ import {
   turnOrderFrom,
 } from './rules';
 import { nextUint32, shuffle } from './rng';
+import { emitTiming } from './events';
 
 const MAX_TURNS = 500;
+const MAX_NULLIFICATION_CHAIN = 16;
+const MAX_REQUESTS_PER_TURN = 4000;
 
 /* ------------------------------------------------------------------ */
 /* 請求工具                                                            */
@@ -94,6 +101,12 @@ function* askAction(
   return pickOption(response, options, '出牌階段');
 }
 
+interface ResponseExtra {
+  cardName?: CardName;
+  source?: PlayerId;
+  targets?: PlayerId[];
+}
+
 function* askResponse(
   state: GameState,
   player: PlayerState,
@@ -101,6 +114,7 @@ function* askResponse(
   options: ResponseOption[],
   prompt: string,
   context: string,
+  extra: ResponseExtra = {},
 ): Generator<Request, ResponseOption | null, Response> {
   if (options.length === 0) return null;
   const pass: ResponseOption = { id: 'pass', label: '不出', kind: 'pass', cards: [] };
@@ -111,6 +125,7 @@ function* askResponse(
     options: all,
     need,
     context,
+    ...extra,
   };
   const response = yield* ask(state, request);
   if (response.type === 'pass') return null;
@@ -118,6 +133,30 @@ function* askResponse(
   const option = all.find((item) => item.id === response.optionId);
   if (!option) throw new Error(`${context}: unknown response option`);
   if (option.kind === 'pass') return null;
+  return option;
+}
+
+/** 強制從選項中選一個，不提供「不出」。 */
+function* askRequiredOption(
+  state: GameState,
+  player: PlayerState,
+  need: ResponseNeed,
+  options: ResponseOption[],
+  prompt: string,
+  context: string,
+): Generator<Request, ResponseOption, Response> {
+  if (options.length === 0) throw new Error(`${context}: no option available`);
+  const request: Request = {
+    ...baseRequest(state, player.id, prompt),
+    kind: 'response',
+    options,
+    need,
+    context,
+  };
+  const response = yield* ask(state, request);
+  if (response.type !== 'option') throw new Error(`${context}: expected option response`);
+  const option = options.find((item) => item.id === response.optionId);
+  if (!option) throw new Error(`${context}: unknown option`);
   return option;
 }
 
@@ -192,6 +231,93 @@ function* askCardFrom(
   return card;
 }
 
+function* askRevealed(
+  state: GameState,
+  player: PlayerState,
+  cards: readonly Card[],
+  prompt: string,
+): Generator<Request, Card | null, Response> {
+  if (cards.length === 0) return null;
+  const request: Request = {
+    ...baseRequest(state, player.id, prompt),
+    kind: 'chooseRevealed',
+    cards: cards.map((card) => ({ ...card })),
+    reason: 'chooseRevealed',
+  };
+  const response = yield* ask(state, request);
+  if (response.type !== 'card') throw new Error('chooseRevealed: expected card response');
+  const card = cards.find((item) => item.id === response.card);
+  if (!card) throw new Error('chooseRevealed: invalid card');
+  return card;
+}
+
+/* ------------------------------------------------------------------ */
+/* 牌與使用脈絡                                                        */
+/* ------------------------------------------------------------------ */
+
+function natureOf(name: CardName): Nature {
+  const meta = CARD_META[name] as { nature?: Nature };
+  return meta.nature ?? 'normal';
+}
+
+function makeUse(
+  state: GameState,
+  source: PlayerState,
+  cards: Card[],
+  name: CardName,
+  targets: PlayerId[],
+  skill?: string,
+): CardUse {
+  const primary = cards[0];
+  if (!primary) throw new Error('CardUse requires at least one physical card');
+  state.useSeq += 1;
+  return {
+    id: state.useSeq,
+    source: source.id,
+    card: primary,
+    cards,
+    name,
+    suit: primary.suit,
+    rank: primary.rank,
+    nature: natureOf(name),
+    targets: [...targets],
+    skill,
+  };
+}
+
+function takeFromHand(_state: GameState, player: PlayerState, ids: readonly number[]): Card[] {
+  const cards: Card[] = [];
+  for (const id of ids) {
+    const index = player.hand.findIndex((card) => card.id === id);
+    if (index < 0) throw new Error(`Card ${id} is not in hand`);
+    cards.push(player.hand.splice(index, 1)[0]!);
+  }
+  return cards;
+}
+
+function cardRef(card: Card): string {
+  return `${cardLabel(card.name)} ${suitSymbol(card.suit)}${rankLabel(card.rank)}`;
+}
+
+function useLabel(use: CardUse): string {
+  return cardLabel(use.name);
+}
+
+function combinations(ids: readonly number[], min: number, max: number): number[][] {
+  const result: number[][] = [];
+  const walk = (start: number, picked: number[]) => {
+    if (picked.length >= min && picked.length <= max) result.push([...picked]);
+    if (picked.length === max) return;
+    for (let index = start; index < ids.length; index += 1) {
+      picked.push(ids[index]!);
+      walk(index + 1, picked);
+      picked.pop();
+    }
+  };
+  walk(0, []);
+  return result;
+}
+
 /* ------------------------------------------------------------------ */
 /* 出牌階段選項                                                        */
 /* ------------------------------------------------------------------ */
@@ -202,16 +328,19 @@ export function getPlayOptions(state: GameState, player: PlayerState): PlayOptio
     if (!options.some((item) => item.id === option.id)) options.push(option);
   };
 
+  const alive = state.players.filter((target) => target.alive);
+
   for (const card of player.hand) {
     const meta = CARD_META[card.name];
-    const ref = `${cardLabel(card.name)} ${suitSymbol(card.suit)}${rankLabel(card.rank)}`;
+    const ref = cardRef(card);
 
     if (isSlashCard(card.name)) {
       if (slashLimitReached(player)) continue;
-      const nature = cardMeta(card.name).nature ?? 'normal';
-      for (const target of state.players) {
-        if (target.id === player.id || !target.alive) continue;
-        if (!inAttackRange(state, player.id, target.id)) continue;
+      const nature = natureOf(card.name);
+      const rangeTargets = alive.filter(
+        (target) => target.id !== player.id && inAttackRange(state, player.id, target.id),
+      );
+      for (const target of rangeTargets) {
         const dist = distance(state, player.id, target.id);
         const wineNote = player.wine ? '［酒 +1］' : '';
         add({
@@ -234,6 +363,23 @@ export function getPlayOptions(state: GameState, player: PlayerState): PlayOptio
             asCard: 'fire_slash',
             nature: 'fire',
             skill: 'fan',
+          });
+        }
+      }
+
+      // 方天畫戟：此【殺】為最後手牌時，可額外指定至多兩名目標。
+      if (player.equips.weapon?.name === 'halberd' && player.hand.length === 1) {
+        const candidates = rangeTargets.map((target) => target.id);
+        for (const targets of combinations(candidates, 2, 3)) {
+          add({
+            id: `slash:${card.id}:${targets.join('+')}:${nature}:halberd`,
+            label: `${ref} → ${targets.map((id) => nameOf(state, id)).join('、')}（方天畫戟）${player.wine ? '［酒 +1］' : ''}`,
+            kind: 'play',
+            cards: [card.id],
+            targets,
+            asCard: card.name,
+            nature,
+            skill: 'halberd',
           });
         }
       }
@@ -293,8 +439,8 @@ export function getPlayOptions(state: GameState, player: PlayerState): PlayOptio
     }
 
     if (card.name === 'dismantle') {
-      for (const target of state.players) {
-        if (target.id === player.id || !target.alive || !hasAnyCard(target)) continue;
+      for (const target of alive) {
+        if (target.id === player.id || !hasAnyCard(target)) continue;
         add({
           id: `dismantle:${card.id}:${target.id}`,
           label: `${ref} → ${nameOf(state, target.id)}`,
@@ -308,8 +454,8 @@ export function getPlayOptions(state: GameState, player: PlayerState): PlayOptio
     }
 
     if (card.name === 'snatch') {
-      for (const target of state.players) {
-        if (target.id === player.id || !target.alive || !hasAnyCard(target)) continue;
+      for (const target of alive) {
+        if (target.id === player.id || !hasAnyCard(target)) continue;
         if (distance(state, player.id, target.id) > 1) continue;
         add({
           id: `snatch:${card.id}:${target.id}`,
@@ -321,6 +467,208 @@ export function getPlayOptions(state: GameState, player: PlayerState): PlayOptio
         });
       }
       continue;
+    }
+
+    if (card.name === 'duel') {
+      for (const target of alive) {
+        if (target.id === player.id) continue;
+        add({
+          id: `duel:${card.id}:${target.id}`,
+          label: `${ref} → ${nameOf(state, target.id)}（輪流打出【殺】）`,
+          kind: 'play',
+          cards: [card.id],
+          targets: [target.id],
+          asCard: 'duel',
+        });
+      }
+      continue;
+    }
+
+    if (card.name === 'collateral') {
+      for (const user of alive) {
+        if (user.id === player.id || !user.equips.weapon) continue;
+        for (const target of alive) {
+          if (target.id === user.id) continue;
+          if (!inAttackRange(state, user.id, target.id)) continue;
+          add({
+            id: `collateral:${card.id}:${user.id}:${target.id}`,
+            label: `${ref} → ${nameOf(state, user.id)} 對 ${nameOf(state, target.id)} 出【殺】`,
+            kind: 'play',
+            cards: [card.id],
+            targets: [user.id, target.id],
+            asCard: 'collateral',
+          });
+        }
+      }
+      continue;
+    }
+
+    if (card.name === 'barbarian') {
+      const targets = alive.filter((target) => target.id !== player.id).map((target) => target.id);
+      add({
+        id: `barbarian:${card.id}`,
+        label: `${ref}（其他角色需打出【殺】）`,
+        kind: 'play',
+        cards: [card.id],
+        targets,
+        asCard: 'barbarian',
+      });
+      continue;
+    }
+
+    if (card.name === 'arrows') {
+      const targets = alive.filter((target) => target.id !== player.id).map((target) => target.id);
+      add({
+        id: `arrows:${card.id}`,
+        label: `${ref}（其他角色需打出【閃】）`,
+        kind: 'play',
+        cards: [card.id],
+        targets,
+        asCard: 'arrows',
+      });
+      continue;
+    }
+
+    if (card.name === 'peach_garden') {
+      add({
+        id: `peach_garden:${card.id}`,
+        label: `${ref}（所有存活角色回復 1 點）`,
+        kind: 'play',
+        cards: [card.id],
+        targets: alive.map((target) => target.id),
+        asCard: 'peach_garden',
+      });
+      continue;
+    }
+
+    if (card.name === 'harvest') {
+      add({
+        id: `harvest:${card.id}`,
+        label: `${ref}（翻開存活人數的牌，輪流選一張）`,
+        kind: 'play',
+        cards: [card.id],
+        targets: alive.map((target) => target.id),
+        asCard: 'harvest',
+      });
+      continue;
+    }
+
+    if (card.name === 'fire_attack') {
+      for (const target of alive) {
+        if (target.id === player.id || target.hand.length === 0) continue;
+        add({
+          id: `fire_attack:${card.id}:${target.id}`,
+          label: `${ref} → ${nameOf(state, target.id)}（展示手牌，同花色可造成火焰傷害）`,
+          kind: 'play',
+          cards: [card.id],
+          targets: [target.id],
+          asCard: 'fire_attack',
+        });
+      }
+      continue;
+    }
+
+    if (card.name === 'iron_chain') {
+      add({
+        id: `recast:${card.id}`,
+        label: `重鑄 ${ref}（棄置並摸 1 張）`,
+        kind: 'play',
+        cards: [card.id],
+        targets: [],
+        asCard: 'iron_chain',
+        skill: 'recast',
+      });
+      for (const target of alive) {
+        add({
+          id: `iron_chain:${card.id}:${target.id}`,
+          label: `${ref} → ${nameOf(state, target.id)}${target.chained ? '（重置）' : '（橫置）'}`,
+          kind: 'play',
+          cards: [card.id],
+          targets: [target.id],
+          asCard: 'iron_chain',
+        });
+      }
+      const ids = alive.map((target) => target.id).sort((a, b) => a - b);
+      for (let i = 0; i < ids.length; i += 1) {
+        for (let j = i + 1; j < ids.length; j += 1) {
+          const targets = [ids[i]!, ids[j]!];
+          add({
+            id: `iron_chain:${card.id}:${targets.join('+')}`,
+            label: `${ref} → ${targets.map((id) => nameOf(state, id)).join('、')}`,
+            kind: 'play',
+            cards: [card.id],
+            targets,
+            asCard: 'iron_chain',
+          });
+        }
+      }
+      continue;
+    }
+
+    if (card.name === 'indulgence') {
+      for (const target of alive) {
+        if (target.id === player.id) continue;
+        if (target.judgeZone.some((item) => item.name === 'indulgence')) continue;
+        add({
+          id: `indulgence:${card.id}:${target.id}`,
+          label: `${ref} → ${nameOf(state, target.id)} 的判定區`,
+          kind: 'play',
+          cards: [card.id],
+          targets: [target.id],
+          asCard: 'indulgence',
+        });
+      }
+      continue;
+    }
+
+    if (card.name === 'supply_shortage') {
+      for (const target of alive) {
+        if (target.id === player.id) continue;
+        if (distance(state, player.id, target.id) > 1) continue;
+        if (target.judgeZone.some((item) => item.name === 'supply_shortage')) continue;
+        add({
+          id: `supply_shortage:${card.id}:${target.id}`,
+          label: `${ref} → ${nameOf(state, target.id)} 的判定區（距離 1）`,
+          kind: 'play',
+          cards: [card.id],
+          targets: [target.id],
+          asCard: 'supply_shortage',
+        });
+      }
+      continue;
+    }
+
+    if (card.name === 'lightning') {
+      if (player.judgeZone.some((item) => item.name === 'lightning')) continue;
+      add({
+        id: `lightning:${card.id}`,
+        label: `${ref} → 自己的判定區`,
+        kind: 'play',
+        cards: [card.id],
+        targets: [player.id],
+        asCard: 'lightning',
+      });
+      continue;
+    }
+
+    // 無懈可擊只能在其他錦囊結算時作為回應使用。
+  }
+
+  // 丈八蛇矛：任意兩張手牌可當【殺】使用。
+  // 選項只列目標；實際的兩張牌在選定目標後才詢問，避免手牌多時選項平方成長。
+  if (player.equips.weapon?.name === 'serpent_spear' && !slashLimitReached(player) && player.hand.length >= 2) {
+    for (const target of alive) {
+      if (target.id === player.id || !inAttackRange(state, player.id, target.id)) continue;
+      add({
+        id: `slash:serpent_spear:${target.id}:normal`,
+        label: `丈八蛇矛：選擇兩張手牌當【殺】→ ${nameOf(state, target.id)}${player.wine ? '［酒 +1］' : ''}`,
+        kind: 'play',
+        cards: [],
+        targets: [target.id],
+        asCard: 'slash',
+        nature: 'normal',
+        skill: 'serpent_spear',
+      });
     }
   }
 
@@ -338,16 +686,22 @@ function* resolvePlayOption(
   option: PlayOption,
 ): Generator<Request, void, Response> {
   if (option.kind === 'pass') return;
-  if (option.kind !== 'play') {
-    // M1 未有主動技能。
-    return;
-  }
+  if (option.kind !== 'play') return;
 
-  const cards: Card[] = [];
-  for (const id of option.cards) {
-    const index = player.hand.findIndex((card) => card.id === id);
-    if (index < 0) throw new Error(`Card ${id} is not in hand`);
-    cards.push(player.hand.splice(index, 1)[0]!);
+  let cards: Card[];
+  if (option.skill === 'serpent_spear' && option.cards.length === 0) {
+    const ids = yield* askCards(
+      state,
+      player,
+      player.hand.map((card) => card.id),
+      2,
+      2,
+      '丈八蛇矛',
+      '請選擇兩張手牌當【殺】',
+    );
+    cards = takeFromHand(state, player, ids);
+  } else {
+    cards = takeFromHand(state, player, option.cards);
   }
   const primary = cards[0];
   if (!primary) throw new Error('No card selected');
@@ -357,27 +711,67 @@ function* resolvePlayOption(
     return;
   }
 
+  // 鐵索連環重鑄：不是使用錦囊，直接棄置並摸一張。
+  if (option.skill === 'recast') {
+    pushDiscard(state, cards);
+    log(state, 'play', `${nameOf(state, player.id)} 重鑄【鐵索連環】。`);
+    drawCards(state, player, 1);
+    return;
+  }
+
   const virtualName = option.asCard ?? primary.name;
+  const nature = option.nature ?? natureOf(virtualName);
   const targets = option.targets
     .map((id) => state.players[id])
     .filter((target): target is PlayerState => Boolean(target));
+  const use = makeUse(
+    state,
+    player,
+    cards,
+    virtualName,
+    targets.map((target) => target.id),
+    option.skill,
+  );
+  use.nature = nature;
+
+  emitTiming('beforeUseCard', { state, use, source: player.id });
 
   log(
     state,
     'play',
-    `${nameOf(state, player.id)} 使用【${cardLabel(virtualName)}】${
-      targets.length > 0
-        ? `→ ${targets.map((target) => nameOf(state, target.id)).join('、')}`
-        : ''
+    `${nameOf(state, player.id)} 使用【${useLabel(use)}】${
+      targets.length > 0 ? `→ ${targets.map((target) => nameOf(state, target.id)).join('、')}` : ''
     }。`,
   );
+
+  const meta = CARD_META[virtualName];
+
+  // 延時錦囊進入判定區，不是棄牌堆。
+  if (meta.type === 'delayed') {
+    const target = targets[0] ?? player;
+    target.judgeZone.push(primary);
+    log(state, 'judge', `【${cardLabel(virtualName)}】置入 ${nameOf(state, target.id)} 的判定區。`);
+    for (const card of cards.slice(1)) pushDiscard(state, [card]);
+    emitTiming('afterUseCard', { state, use, source: player.id });
+    return;
+  }
+
   pushDiscard(state, cards);
+
+  // 錦囊結算前開啟無懈可擊窗口。
+  if (meta.type === 'trick') {
+    const negated = yield* askNullification(state, use);
+    if (negated) {
+      log(state, 'play', `${useLabel(use)} 被【無懈可擊】抵消。`);
+      emitTiming('afterUseCard', { state, use, source: player.id });
+      return;
+    }
+  }
 
   switch (virtualName) {
     case 'slash':
     case 'fire_slash':
     case 'thunder_slash': {
-      const nature = option.nature ?? CARD_META[virtualName].nature ?? 'normal';
       let bonus = 0;
       if (player.wine) {
         bonus = 1;
@@ -386,8 +780,8 @@ function* resolvePlayOption(
       }
       player.slashUsed += 1;
       for (const target of targets) {
-        yield* resolveSlashTarget(state, player, target, primary, nature, bonus);
         if (state.winner) return;
+        yield* resolveSlashTarget(state, player, target, use, { bonus });
       }
       break;
     }
@@ -446,7 +840,6 @@ function* resolvePlayOption(
         const fromHand = target.hand.some((item) => item.id === card.id);
         const removed = removeCardFromPlayer(state, target, card.id, true);
         player.hand.push(removed);
-        // 從手牌取得的牌只有獲得者知道；日誌不可洩漏給其他玩家。
         log(
           state,
           'play',
@@ -458,50 +851,297 @@ function* resolvePlayOption(
       break;
     }
 
+    case 'duel': {
+      const target = targets[0];
+      if (!target) break;
+      let current = target;
+      let other = player;
+      while (current.alive && other.alive && !state.winner) {
+        const played = yield* askForSha(state, current, '【決鬥】');
+        if (!played) {
+          yield* dealDamage(state, {
+            sourceId: other.id,
+            targetId: current.id,
+            amount: 1,
+            nature: 'normal',
+            card: use.card,
+            reason: '決鬥',
+          });
+          break;
+        }
+        const next = other;
+        other = current;
+        current = next;
+      }
+      break;
+    }
+
+    case 'barbarian':
+    case 'arrows': {
+      const requireSha = virtualName === 'barbarian';
+      for (const target of turnOrderFrom(state, player.id)) {
+        if (!target.alive || target.id === player.id || state.winner) continue;
+        if (target.equips.armor?.name === 'vine_armor') {
+          log(
+            state,
+            'play',
+            `${nameOf(state, target.id)} 的【藤甲】令【${cardLabel(virtualName)}】無效。`,
+          );
+          continue;
+        }
+        const played = requireSha
+          ? Boolean(yield* askForSha(state, target, `【${cardLabel(virtualName)}】`))
+          : yield* askForShan(state, target, `【${cardLabel(virtualName)}】`);
+        if (!played) {
+          yield* dealDamage(state, {
+            sourceId: player.id,
+            targetId: target.id,
+            amount: 1,
+            nature: 'normal',
+            card: use.card,
+            reason: cardLabel(virtualName),
+          });
+        }
+      }
+      break;
+    }
+
+    case 'peach_garden': {
+      for (const target of turnOrderFrom(state, player.id)) {
+        if (target.alive) heal(state, target, 1, '桃園結義');
+      }
+      break;
+    }
+
+    case 'harvest': {
+      const count = state.players.filter((target) => target.alive).length;
+      const revealed = takeFromDeck(state, count);
+      if (revealed.length === 0) break;
+      log(
+        state,
+        'draw',
+        `【五穀豐登】翻開：${revealed.map((card) => cardRef(card)).join('、')}。`,
+      );
+      for (const target of turnOrderFrom(state, player.id)) {
+        if (!target.alive || revealed.length === 0) continue;
+        const picked = yield* askRevealed(
+          state,
+          target,
+          revealed,
+          `五穀豐登：選擇一張牌（剩餘 ${revealed.length} 張）`,
+        );
+        if (!picked) continue;
+        const index = revealed.findIndex((card) => card.id === picked.id);
+        if (index >= 0) revealed.splice(index, 1);
+        target.hand.push(picked);
+        log(state, 'draw', `${nameOf(state, target.id)} 獲得【${cardLabel(picked.name)}】。`);
+      }
+      pushDiscard(state, revealed);
+      break;
+    }
+
+    case 'collateral': {
+      const user = targets[0];
+      const victim = targets[1];
+      if (!user || !victim) break;
+      const weapon = user.equips.weapon;
+      if (!weapon) break;
+      const played = yield* askForSha(
+        state,
+        user,
+        `【借刀殺人】→ ${nameOf(state, victim.id)}`,
+        victim,
+      );
+      if (played) {
+        log(
+          state,
+          'play',
+          `${nameOf(state, user.id)} 受【借刀殺人】影響，對 ${nameOf(state, victim.id)} 使用【${cardLabel(played.name)}】。`,
+        );
+        yield* resolveSlashTarget(state, user, victim, makeUse(
+          state,
+          user,
+          played.cards,
+          played.name,
+          [victim.id],
+        ), { bonus: 0 });
+      } else {
+        const removed = removeCardFromPlayer(state, user, weapon.id, true);
+        player.hand.push(removed);
+        log(
+          state,
+          'play',
+          `${nameOf(state, user.id)} 未出【殺】，${nameOf(state, player.id)} 獲得其【${cardLabel(removed.name)}】。`,
+        );
+      }
+      break;
+    }
+
+    case 'fire_attack': {
+      const target = targets[0];
+      if (!target || target.hand.length === 0) break;
+      const revealedIds = yield* askCards(
+        state,
+        target,
+        target.hand.map((card) => card.id),
+        1,
+        1,
+        '火攻展示',
+        `火攻：選擇一張手牌展示給 ${nameOf(state, player.id)}`,
+      );
+      const shown = target.hand.find((card) => card.id === revealedIds[0]);
+      if (!shown) break;
+      log(
+        state,
+        'play',
+        `${nameOf(state, target.id)} 展示【${cardRef(shown)}】。`,
+      );
+      const sameSuit = player.hand.filter((card) => card.suit === shown.suit);
+      if (sameSuit.length === 0) {
+        log(state, 'play', `${nameOf(state, player.id)} 沒有同花色手牌，火攻未造成傷害。`);
+        break;
+      }
+      const options: ResponseOption[] = sameSuit.map((card) => ({
+        id: `fire_attack:${card.id}`,
+        label: `棄置 ${cardRef(card)}，造成 1 點火焰傷害`,
+        kind: 'respond',
+        cards: [card.id],
+        asCard: card.name,
+      }));
+      const chosen = yield* askResponse(
+        state,
+        player,
+        'card',
+        options,
+        `是否棄置一張${suitLabel(shown.suit)}手牌造成火焰傷害？`,
+        '火攻',
+      );
+      if (chosen) {
+        const [discarded] = takeFromHand(state, player, chosen.cards);
+        if (discarded) pushDiscard(state, [discarded]);
+        yield* dealDamage(state, {
+          sourceId: player.id,
+          targetId: target.id,
+          amount: 1,
+          nature: 'fire',
+          card: use.card,
+          reason: '火攻',
+        });
+      }
+      break;
+    }
+
+    case 'iron_chain': {
+      for (const target of targets) {
+        if (!target.alive) continue;
+        target.chained = !target.chained;
+        log(
+          state,
+          'play',
+          `${nameOf(state, target.id)} ${target.chained ? '橫置（連環狀態）' : '重置（解除連環）'}。`,
+        );
+      }
+      break;
+    }
+
     default: {
-      log(state, 'system', `【${cardLabel(virtualName)}】尚未實作，牌已進入棄牌堆。`);
+      log(state, 'system', `【${cardLabel(virtualName)}】沒有可執行效果。`);
       break;
     }
   }
+
+  emitTiming('afterUseCard', { state, use, source: player.id });
 }
 
-function* resolveSlashTarget(
-  state: GameState,
-  source: PlayerState,
-  target: PlayerState,
-  card: Card,
-  nature: 'normal' | 'fire' | 'thunder',
-  bonus: number,
-): Generator<Request, void, Response> {
-  if (!target.alive) return;
+/* ------------------------------------------------------------------ */
+/* 殺、閃、無懈                                                        */
+/* ------------------------------------------------------------------ */
 
-  if (target.equips.armor?.name === 'renwang' && isBlack(card)) {
-    log(state, 'play', `${nameOf(state, target.id)} 的【仁王盾】令黑色【殺】無效。`);
-    return;
-  }
-
-  if (target.equips.armor?.name === 'vine_armor' && nature === 'normal' && isSlashCard(card.name)) {
-    log(state, 'play', `${nameOf(state, target.id)} 的【藤甲】令普通【殺】無效。`);
-    return;
-  }
-
-  const dodged = yield* askForShan(state, target, `【${cardLabel(card.name)}】`);
-  if (dodged) {
-    log(state, 'play', `${nameOf(state, target.id)} 抵消了【${cardLabel(card.name)}】。`);
-    return;
-  }
-
-  yield* dealDamage(state, source.id, target.id, 1 + bonus, nature, card, '殺');
+interface ShaPlay {
+  card: Card;
+  cards: Card[];
+  name: CardName;
+  skill?: string;
 }
 
-function* askForShan(
+function getShaOptions(
   state: GameState,
-  target: PlayerState,
-  context: string,
-  allowBagua = true,
-): Generator<Request, boolean, Response> {
+  player: PlayerState,
+  target?: PlayerState,
+): ResponseOption[] {
   const options: ResponseOption[] = [];
-  for (const card of target.hand) {
+  if (target && !inAttackRange(state, player.id, target.id)) return options;
+  for (const card of player.hand) {
+    if (isSlashCard(card.name)) {
+      options.push({
+        id: `sha:${card.id}`,
+        label: `打出【${cardLabel(card.name)}】`,
+        kind: 'respond',
+        cards: [card.id],
+        asCard: card.name,
+      });
+    }
+  }
+  if (player.equips.weapon?.name === 'serpent_spear' && player.hand.length >= 2) {
+    // 只在回應時提供一個選項；實際的兩張牌在選定後才詢問。
+    options.push({
+      id: 'sha_spear',
+      label: '丈八蛇矛：選擇兩張手牌當【殺】',
+      kind: 'respond',
+      cards: [],
+      asCard: 'slash',
+      skill: 'serpent_spear',
+    });
+  }
+  return options;
+}
+
+function* askForSha(
+  state: GameState,
+  player: PlayerState,
+  context: string,
+  target?: PlayerState,
+): Generator<Request, ShaPlay | null, Response> {
+  const options = getShaOptions(state, player, target);
+  if (options.length === 0) return null;
+  const chosen = yield* askResponse(
+    state,
+    player,
+    'sha',
+    options,
+    '是否打出【殺】？',
+    context,
+  );
+  if (!chosen) return null;
+  let cards: Card[];
+  if (chosen.skill === 'serpent_spear' && chosen.cards.length === 0) {
+    const ids = yield* askCards(
+      state,
+      player,
+      player.hand.map((card) => card.id),
+      2,
+      2,
+      '丈八蛇矛',
+      '請選擇兩張手牌當【殺】打出',
+    );
+    cards = takeFromHand(state, player, ids);
+  } else {
+    cards = takeFromHand(state, player, chosen.cards);
+  }
+  if (cards.length === 0) return null;
+  pushDiscard(state, cards);
+  const name = chosen.asCard ?? cards[0]!.name;
+  log(
+    state,
+    'play',
+    `${nameOf(state, player.id)} 打出【${cardLabel(name)}】${chosen.skill === 'serpent_spear' ? '（丈八蛇矛）' : ''}。`,
+  );
+  return { card: cards[0]!, cards, name, skill: chosen.skill };
+}
+
+function getShanOptions(player: PlayerState, allowBagua: boolean): ResponseOption[] {
+  const options: ResponseOption[] = [];
+  for (const card of player.hand) {
     if (card.name === 'dodge') {
       options.push({
         id: `dodge:${card.id}`,
@@ -512,7 +1152,7 @@ function* askForShan(
       });
     }
   }
-  if (allowBagua && target.equips.armor?.name === 'eight_diagram') {
+  if (allowBagua && player.equips.armor?.name === 'eight_diagram') {
     options.push({
       id: 'bagua',
       label: '八卦陣（判定，紅色視為【閃】）',
@@ -521,19 +1161,28 @@ function* askForShan(
       skill: 'bagua',
     });
   }
+  return options;
+}
 
+function* askForShan(
+  state: GameState,
+  target: PlayerState,
+  context: string,
+  allowBagua = true,
+): Generator<Request, boolean, Response> {
+  const options = getShanOptions(target, allowBagua);
   const chosen = yield* askResponse(
     state,
     target,
     'shan',
     options,
-    `是否使用【閃】？`,
+    '是否打出【閃】？',
     context,
   );
   if (!chosen) return false;
 
   if (chosen.skill === 'bagua') {
-    const judged = judge(state, target, '八卦陣');
+    const judged = judgeCard(state, target, '八卦陣');
     if (judged && isRed(judged)) {
       log(state, 'play', `${nameOf(state, target.id)} 的【八卦陣】判定成功，視為打出【閃】。`);
       return true;
@@ -542,23 +1191,378 @@ function* askForShan(
     return yield* askForShan(state, target, context, false);
   }
 
-  const card = getCard(chosen.cards[0]!);
-  removeCardFromPlayer(state, target, card.id, false);
-  pushDiscard(state, [card]);
-  log(state, 'play', `${nameOf(state, target.id)} 打出【閃】。`);
+  const cards = takeFromHand(state, target, chosen.cards);
+  const card = cards[0];
+  if (!card) return false;
+  pushDiscard(state, cards);
+  log(state, 'play', `${nameOf(state, target.id)} 打出【${cardLabel(card.name)}】。`);
   return true;
 }
 
-function judge(state: GameState, player: PlayerState, reason: string): Card | null {
-  if (state.deck.length === 0) {
-    if (state.discard.length === 0) {
-      setWinner(state, [], '牌堆與棄牌堆耗盡，無法判定，平局');
-      return null;
+function getNullificationOptions(player: PlayerState): ResponseOption[] {
+  return player.hand
+    .filter((card) => card.name === 'nullification')
+    .map((card) => ({
+      id: `wuxie:${card.id}`,
+      label: '打出【無懈可擊】',
+      kind: 'respond' as const,
+      cards: [card.id],
+      asCard: 'nullification' as const,
+    }));
+}
+
+/**
+ * 無懈可擊連鎖。
+ *
+ * 回傳 true 表示目標錦囊最終被抵消。每打出一張無懈就從頭重新詢問，
+ * 以 LIFO 語意處理「無懈無懈可擊」。最大深度 16。
+ */
+function* askNullification(
+  state: GameState,
+  use: CardUse,
+): Generator<Request, boolean, Response> {
+  let count = 0;
+  while (count < MAX_NULLIFICATION_CHAIN) {
+    let played = false;
+    for (const responder of turnOrderFrom(state, use.source)) {
+      if (!responder.alive) continue;
+      const options = getNullificationOptions(responder);
+      if (options.length === 0) continue;
+      const chosen = yield* askResponse(
+        state,
+        responder,
+        'wuxie',
+        options,
+        `是否對【${useLabel(use)}】使用【無懈可擊】？`,
+        '無懈可擊',
+        { cardName: use.name, source: use.source, targets: use.targets },
+      );
+      if (chosen) {
+        const cards = takeFromHand(state, responder, chosen.cards);
+        pushDiscard(state, cards);
+        count += 1;
+        played = true;
+        log(
+          state,
+          'play',
+          `${nameOf(state, responder.id)} 對【${useLabel(use)}】使用【無懈可擊】（連鎖 ${count}）。`,
+        );
+        break;
+      }
     }
-    state.deck = shuffle(state.discard.splice(0), state);
-    log(state, 'system', '棄牌堆已洗回牌堆。');
+    if (!played) break;
   }
-  const card = state.deck.pop();
+  if (count >= MAX_NULLIFICATION_CHAIN) {
+    log(state, 'system', `無懈可擊連鎖達到上限 ${MAX_NULLIFICATION_CHAIN}，停止詢問。`);
+  }
+  return count % 2 === 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* 武器與殺的結算                                                      */
+/* ------------------------------------------------------------------ */
+
+interface SlashOptions {
+  bonus?: number;
+  ignoreArmor?: boolean;
+  noDodge?: boolean;
+  fromWeapon?: boolean;
+}
+
+function* resolveSlashTarget(
+  state: GameState,
+  source: PlayerState,
+  target: PlayerState,
+  use: CardUse,
+  extra: SlashOptions = {},
+): Generator<Request, void, Response> {
+  if (!target.alive || !source.alive) return;
+
+  const weapon = source.equips.weapon?.name;
+  let bonus = extra.bonus ?? 0;
+  let noDodge = extra.noDodge ?? false;
+  const ignoreArmor = extra.ignoreArmor ?? weapon === 'qinggang';
+
+  // 貫石斧：使用【殺】時可棄兩張手牌，令此【殺】不可被【閃】抵消且傷害 +1。
+  if (!extra.fromWeapon && weapon === 'rock_axe' && source.hand.length >= 2) {
+    const chosen = yield* askResponse(
+      state,
+      source,
+      'choice',
+      [{
+        id: 'rock_axe',
+        label: '貫石斧：棄置 2 張手牌，令此【殺】不可被【閃】抵消且傷害 +1',
+        kind: 'skill',
+        cards: [],
+        skill: 'rock_axe',
+        targets: [target.id],
+      }],
+      '是否發動【貫石斧】？',
+      '貫石斧',
+    );
+    if (chosen) {
+      const discarded = yield* askCards(
+        state,
+        source,
+        source.hand.map((card) => card.id),
+        2,
+        2,
+        '貫石斧',
+        '棄置 2 張手牌',
+      );
+      discardFromHand(state, source, discarded, '貫石斧');
+      bonus += 1;
+      noDodge = true;
+      log(state, 'play', `${nameOf(state, source.id)} 發動【貫石斧】，此【殺】不可被【閃】抵消且傷害 +1。`);
+    }
+  }
+
+  // 雌雄雙股劍：指定異性目標時，令其選擇棄一張手牌或讓來源摸一張。
+  if (
+    !extra.fromWeapon &&
+    weapon === 'double_sword' &&
+    generalOf(source).gender !== generalOf(target).gender
+  ) {
+    const chosen = yield* askResponse(
+      state,
+      source,
+      'choice',
+      [{
+        id: 'double_sword',
+        label: '雌雄雙股劍：令目標棄一張手牌，或讓你摸一張牌',
+        kind: 'skill',
+        cards: [],
+        skill: 'double_sword',
+        targets: [target.id],
+      }],
+      '是否發動【雌雄雙股劍】？',
+      '雌雄雙股劍',
+    );
+    if (chosen) {
+      if (target.hand.length === 0) {
+        drawCards(state, source, 1);
+        log(state, 'play', `${nameOf(state, target.id)} 沒有手牌，${nameOf(state, source.id)} 摸 1 張牌。`);
+      } else {
+        const choice = yield* askRequiredOption(
+          state,
+          target,
+          'choice',
+          [
+            {
+              id: 'discard',
+              label: '棄置一張手牌',
+              kind: 'skill',
+              cards: [],
+              skill: 'discard',
+            },
+            {
+              id: 'draw',
+              label: `讓 ${nameOf(state, source.id)} 摸一張牌`,
+              kind: 'skill',
+              cards: [],
+              skill: 'draw',
+            },
+          ],
+          '雌雄雙股劍：請選擇一項',
+          '雌雄雙股劍',
+        );
+        if (choice.skill === 'discard') {
+          const ids = yield* askCards(
+            state,
+            target,
+            target.hand.map((card) => card.id),
+            1,
+            1,
+            '雌雄雙股劍',
+            '選擇一張手牌棄置',
+          );
+          discardFromHand(state, target, ids, '雌雄雙股劍');
+        } else {
+          drawCards(state, source, 1);
+          log(state, 'play', `${nameOf(state, source.id)} 因【雌雄雙股劍】摸 1 張牌。`);
+        }
+      }
+    }
+  }
+
+  if (!ignoreArmor) {
+    if (target.equips.armor?.name === 'renwang' && isBlack(use.card)) {
+      log(state, 'play', `${nameOf(state, target.id)} 的【仁王盾】令黑色【殺】無效。`);
+      return;
+    }
+    if (target.equips.armor?.name === 'vine_armor' && use.nature === 'normal') {
+      log(state, 'play', `${nameOf(state, target.id)} 的【藤甲】令普通【殺】無效。`);
+      return;
+    }
+  }
+
+  if (!noDodge) {
+    const dodged = yield* askForShan(
+      state,
+      target,
+      `【${cardLabel(use.name)}】`,
+      !ignoreArmor,
+    );
+    if (dodged) {
+      log(state, 'play', `${nameOf(state, target.id)} 抵消了【${cardLabel(use.name)}】。`);
+
+      // 青龍偃月刀：被【閃】抵消時，可再使用一張【殺】。
+      if (!extra.fromWeapon && weapon === 'green_dragon') {
+        const slashOptions = getShaOptions(state, source, target);
+        if (slashOptions.length > 0) {
+          const chosen = yield* askResponse(
+            state,
+            source,
+            'choice',
+            [{
+              id: 'green_dragon',
+              label: '青龍偃月刀：再使用一張【殺】',
+              kind: 'skill',
+              cards: [],
+              skill: 'green_dragon',
+              targets: [target.id],
+            }],
+            '是否發動【青龍偃月刀】？',
+            '青龍偃月刀',
+          );
+          if (chosen) {
+            const extraSlash = yield* askForSha(state, source, '青龍偃月刀', target);
+            if (extraSlash) {
+              log(state, 'play', `${nameOf(state, source.id)} 發動【青龍偃月刀】再使用【殺】。`);
+              const nextUse = makeUse(
+                state,
+                source,
+                extraSlash.cards,
+                extraSlash.name,
+                [target.id],
+                'green_dragon',
+              );
+              yield* resolveSlashTarget(state, source, target, nextUse, { fromWeapon: true });
+            }
+          }
+        }
+      }
+      return;
+    }
+  }
+
+  // 寒冰劍：造成傷害時，可防止傷害並棄置目標兩張牌。
+  if (!extra.fromWeapon && weapon === 'ice_sword' && hasAnyCard(target)) {
+    const chosen = yield* askResponse(
+      state,
+      source,
+      'choice',
+      [{
+        id: 'ice_sword',
+        label: '寒冰劍：防止此傷害，改為棄置目標兩張牌',
+        kind: 'skill',
+        cards: [],
+        skill: 'ice_sword',
+        targets: [target.id],
+      }],
+      '是否發動【寒冰劍】？',
+      '寒冰劍',
+    );
+    if (chosen) {
+      const count = Math.min(2, allCardsOf(target).length);
+      const discarded: Card[] = [];
+      for (let i = 0; i < count; i += 1) {
+        const card = yield* askCardFrom(
+          state,
+          source,
+          target,
+          '寒冰劍',
+          `選擇要棄置 ${nameOf(state, target.id)} 的第 ${i + 1} 張牌`,
+        );
+        if (!card) break;
+        discarded.push(removeCardFromPlayer(state, target, card.id, true));
+      }
+      pushDiscard(state, discarded);
+      log(
+        state,
+        'play',
+        `${nameOf(state, source.id)} 的【寒冰劍】防止傷害，棄置 ${nameOf(state, target.id)} 的 ${discarded.length} 張牌。`,
+      );
+      return;
+    }
+  }
+
+  yield* dealDamage(state, {
+    sourceId: source.id,
+    targetId: target.id,
+    amount: 1 + bonus,
+    nature: use.nature,
+    card: use.card,
+    cardName: use.name,
+    reason: cardLabel(use.name),
+    ignoreArmor,
+  });
+
+  // 麒麟弓：造成傷害時，可棄置目標的一匹馬。
+  if (
+    !extra.fromWeapon &&
+    weapon === 'qilin_bow' &&
+    target.alive &&
+    (target.equips.horsePlus || target.equips.horseMinus)
+  ) {
+    const horses = [target.equips.horsePlus, target.equips.horseMinus].filter(
+      (card): card is Card => card !== null,
+    );
+    const chosen = yield* askResponse(
+      state,
+      source,
+      'choice',
+      horses.map((card) => ({
+        id: `qilin:${card.id}`,
+        label: `麒麟弓：棄置 ${nameOf(state, target.id)} 的【${cardLabel(card.name)}】`,
+        kind: 'skill' as const,
+        cards: [card.id],
+        skill: 'qilin_bow',
+        targets: [target.id],
+      })),
+      '是否發動【麒麟弓】？',
+      '麒麟弓',
+    );
+    if (chosen) {
+      const card = horses.find((item) => item.id === chosen.cards[0]);
+      if (card) {
+        const removed = removeCardFromPlayer(state, target, card.id, true);
+        pushDiscard(state, [removed]);
+        log(
+          state,
+          'play',
+          `${nameOf(state, source.id)} 的【麒麟弓】棄置 ${nameOf(state, target.id)} 的【${cardLabel(removed.name)}】。`,
+        );
+      }
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 判定                                                                */
+/* ------------------------------------------------------------------ */
+
+function takeFromDeck(state: GameState, count: number): Card[] {
+  const cards: Card[] = [];
+  for (let i = 0; i < count; i += 1) {
+    if (state.deck.length === 0) {
+      if (state.discard.length === 0) {
+        setWinner(state, [], '牌堆與棄牌堆耗盡，平局');
+        break;
+      }
+      state.deck = shuffle(state.discard.splice(0), state);
+      log(state, 'system', '棄牌堆已洗回牌堆。');
+    }
+    const card = state.deck.pop();
+    if (!card) break;
+    cards.push(card);
+  }
+  return cards;
+}
+
+function judgeCard(state: GameState, player: PlayerState, reason: string): Card | null {
+  emitTiming('beforeJudge', { state, target: player.id });
+  const [card] = takeFromDeck(state, 1);
   if (!card) return null;
   log(
     state,
@@ -566,50 +1570,176 @@ function judge(state: GameState, player: PlayerState, reason: string): Card | nu
     `${nameOf(state, player.id)} 判定（${reason}）：${cardLabel(card.name)} ${suitSymbol(card.suit)}${rankLabel(card.rank)}。`,
   );
   pushDiscard(state, [card]);
+  emitTiming('afterJudge', { state, target: player.id, card });
   return card;
+}
+
+interface JudgeOutcome {
+  skipDraw: boolean;
+  skipPlay: boolean;
+}
+
+function* runJudgePhase(
+  state: GameState,
+  player: PlayerState,
+): Generator<Request, JudgeOutcome, Response> {
+  const outcome: JudgeOutcome = { skipDraw: false, skipPlay: false };
+
+  while (player.judgeZone.length > 0 && player.alive && !state.winner) {
+    const delayed = player.judgeZone[player.judgeZone.length - 1];
+    if (!delayed) break;
+    const use = makeUse(state, player, [delayed], delayed.name, [player.id], 'judge');
+
+    const negated = yield* askNullification(state, use);
+    if (negated) {
+      removeCardFromPlayer(state, player, delayed.id, false);
+      pushDiscard(state, [delayed]);
+      log(
+        state,
+        'judge',
+        `${nameOf(state, player.id)} 判定區的【${cardLabel(delayed.name)}】被【無懈可擊】抵消。`,
+      );
+      continue;
+    }
+
+    const judged = judgeCard(state, player, cardLabel(delayed.name));
+    if (!judged) break;
+
+    removeCardFromPlayer(state, player, delayed.id, false);
+
+    if (delayed.name === 'indulgence') {
+      if (judged.suit !== 'heart') {
+        outcome.skipPlay = true;
+        log(state, 'judge', `【樂不思蜀】判定失敗，${nameOf(state, player.id)} 跳過出牌階段。`);
+      } else {
+        log(state, 'judge', `【樂不思蜀】判定成功，${nameOf(state, player.id)} 不受影響。`);
+      }
+      pushDiscard(state, [delayed]);
+      continue;
+    }
+
+    if (delayed.name === 'supply_shortage') {
+      if (judged.suit !== 'club') {
+        outcome.skipDraw = true;
+        log(state, 'judge', `【兵糧寸斷】判定失敗，${nameOf(state, player.id)} 跳過摸牌階段。`);
+      } else {
+        log(state, 'judge', `【兵糧寸斷】判定成功，${nameOf(state, player.id)} 不受影響。`);
+      }
+      pushDiscard(state, [delayed]);
+      continue;
+    }
+
+    if (delayed.name === 'lightning') {
+      const hit = judged.suit === 'spade' && judged.rank >= 2 && judged.rank <= 9;
+      if (hit) {
+        log(state, 'judge', `【閃電】命中，${nameOf(state, player.id)} 受到 3 點雷電傷害。`);
+        pushDiscard(state, [delayed]);
+        yield* dealDamage(state, {
+          sourceId: null,
+          targetId: player.id,
+          amount: 3,
+          nature: 'thunder',
+          card: delayed,
+          reason: '閃電',
+        });
+      } else {
+        const next = nextLightningHost(state, player.id);
+        if (next) {
+          next.judgeZone.push(delayed);
+          log(
+            state,
+            'judge',
+            `【閃電】未命中，移動到 ${nameOf(state, next.id)} 的判定區。`,
+          );
+        } else {
+          pushDiscard(state, [delayed]);
+          log(state, 'judge', '【閃電】未命中，且沒有其他角色可放置，進入棄牌堆。');
+        }
+      }
+      continue;
+    }
+
+    // 未知延時錦囊：安全地棄置。
+    pushDiscard(state, [delayed]);
+  }
+
+  return outcome;
+}
+
+function nextLightningHost(state: GameState, from: PlayerId): PlayerState | null {
+  const order = turnOrderFrom(state, from).slice(1);
+  for (const player of order) {
+    if (!player.alive) continue;
+    if (player.judgeZone.some((card) => card.name === 'lightning')) continue;
+    return player;
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
 /* 傷害、瀕死、死亡                                                    */
 /* ------------------------------------------------------------------ */
 
+interface DamageOptions {
+  sourceId: PlayerId | null;
+  targetId: PlayerId;
+  amount: number;
+  nature: Nature;
+  card: Card | null;
+  /** 虛擬牌名；丈八蛇矛等轉化牌需要靠這個欄位判斷是否為【殺】。 */
+  cardName?: CardName;
+  reason: string;
+  ignoreArmor?: boolean;
+  fromChain?: boolean;
+  chainSet?: Set<PlayerId>;
+}
+
 function* dealDamage(
   state: GameState,
-  sourceId: PlayerId | null,
-  targetId: PlayerId,
-  baseAmount: number,
-  nature: 'normal' | 'fire' | 'thunder',
-  card: Card | null,
-  reason: string,
+  options: DamageOptions,
 ): Generator<Request, void, Response> {
+  const { sourceId, targetId, nature, card, reason } = options;
   const target = state.players[targetId];
   if (!target || !target.alive) return;
   const source = sourceId === null ? null : state.players[sourceId];
 
-  let amount = baseAmount;
+  emitTiming('beforeDamage', {
+    state,
+    source: sourceId,
+    target: targetId,
+    card,
+    amount: options.amount,
+  });
+
+  let amount = options.amount;
+  const damageCardName = options.cardName ?? card?.name;
 
   if (
     source &&
-    card &&
-    isSlashCard(card.name) &&
+    damageCardName &&
+    isSlashCard(damageCardName) &&
     source.equips.weapon?.name === 'ancient_scimitar' &&
-    target.hand.length === 0
+    target.hand.length === 0 &&
+    !options.fromChain
   ) {
     amount += 1;
     log(state, 'damage', `${nameOf(state, source.id)} 的【古錠刀】令傷害 +1。`);
   }
 
-  if (target.equips.armor?.name === 'vine_armor' && nature === 'fire') {
+  if (!options.ignoreArmor && target.equips.armor?.name === 'vine_armor' && nature === 'fire') {
     amount += 1;
     log(state, 'damage', `${nameOf(state, target.id)} 的【藤甲】令火焰傷害 +1。`);
   }
 
-  if (target.equips.armor?.name === 'silver_lion' && amount > 1) {
+  if (!options.ignoreArmor && target.equips.armor?.name === 'silver_lion' && amount > 1) {
     amount = 1;
     log(state, 'damage', `${nameOf(state, target.id)} 的【白銀獅子】將傷害限制為 1。`);
   }
 
-  if (amount <= 0) return;
+  if (amount <= 0) {
+    emitTiming('afterDamage', { state, source: sourceId, target: targetId, card, amount: 0 });
+    return;
+  }
 
   target.hp -= amount;
   const sourceName = source ? nameOf(state, source.id) : '未知來源';
@@ -619,15 +1749,52 @@ function* dealDamage(
     `${sourceName} 對 ${nameOf(state, target.id)} 造成 ${amount} 點${natureLabel(nature)}傷害（${reason}）。`,
   );
 
+  const wasChained = target.chained;
+  if (wasChained && nature !== 'normal') target.chained = false;
+
   if (target.hp <= 0) {
+    emitTiming('dying', { state, source: sourceId, target: target.id });
     const saved = yield* runDying(state, target);
     if (!saved) {
       yield* killPlayer(state, target, sourceId);
-      return;
     }
   }
 
-  // 奸雄、反饋、剛烈、遺計等「受到傷害後」技能：M3 接入。
+  // 鐵索連環：屬性傷害傳導。同一條連鎖中每個角色只傳導一次。
+  if (wasChained && nature !== 'normal') {
+    const chainSet = options.chainSet ?? new Set<PlayerId>();
+    chainSet.add(target.id);
+    log(state, 'damage', `${nameOf(state, target.id)} 的鐵索連環被觸發。`);
+    for (const other of aliveInSeatOrder(state)) {
+      if (other.id === target.id || !other.chained || chainSet.has(other.id)) continue;
+      other.chained = false;
+      chainSet.add(other.id);
+      log(
+        state,
+        'damage',
+        `鐵索連環傳導至 ${nameOf(state, other.id)}（${amount} 點${natureLabel(nature)}傷害）。`,
+      );
+      yield* dealDamage(state, {
+        sourceId,
+        targetId: other.id,
+        amount,
+        nature,
+        card,
+        reason: `${reason}（鐵索傳導）`,
+        ignoreArmor: options.ignoreArmor,
+        fromChain: true,
+        chainSet,
+      });
+    }
+  }
+
+  emitTiming('afterDamage', {
+    state,
+    source: sourceId,
+    target: targetId,
+    card,
+    amount,
+  });
 }
 
 function getSaveOptions(
@@ -680,9 +1847,10 @@ function* runDying(
       );
       if (!chosen) break;
 
-      const card = getCard(chosen.cards[0]!);
-      removeCardFromPlayer(state, responder, card.id, false);
-      pushDiscard(state, [card]);
+      const cards = takeFromHand(state, responder, chosen.cards);
+      const card = cards[0];
+      if (!card) break;
+      pushDiscard(state, cards);
       log(
         state,
         'play',
@@ -705,6 +1873,7 @@ function* killPlayer(
 
   victim.alive = false;
   victim.hp = 0;
+  emitTiming('death', { state, source: killerId, target: victim.id });
   log(
     state,
     'death',
@@ -785,7 +1954,13 @@ function* runPlayPhase(
   state: GameState,
   player: PlayerState,
 ): Generator<Request, void, Response> {
+  let requests = 0;
   while (!state.winner && player.alive) {
+    requests += 1;
+    if (requests > MAX_REQUESTS_PER_TURN) {
+      setWinner(state, [], '單一階段請求過多，判定為死循環');
+      return;
+    }
     const option = yield* askAction(state, player);
     if (option.kind === 'pass') break;
     yield* resolvePlayOption(state, player, option);
@@ -798,26 +1973,44 @@ function* runTurn(state: GameState, player: PlayerState): Generator<Request, voi
   player.slashUsed = 0;
   player.wineUsed = false;
   player.wine = false;
+  emitTiming('phaseStart', { state, phase: 'prepare', target: player.id });
 
   log(state, 'phase', `── ${nameOf(state, player.id)} 的回合 ──`);
 
   state.phase = 'judge';
-  // M1 未有延時錦囊，判定階段直接略過。
+  emitTiming('phaseStart', { state, phase: 'judge', target: player.id });
+  const outcome = yield* runJudgePhase(state, player);
+  emitTiming('phaseEnd', { state, phase: 'judge', target: player.id });
   if (state.winner || !player.alive) return;
 
   state.phase = 'draw';
-  drawCards(state, player, 2);
+  emitTiming('phaseStart', { state, phase: 'draw', target: player.id });
+  if (outcome.skipDraw) {
+    log(state, 'phase', `${nameOf(state, player.id)} 跳過摸牌階段。`);
+  } else {
+    drawCards(state, player, 2);
+  }
+  emitTiming('phaseEnd', { state, phase: 'draw', target: player.id });
   if (state.winner || !player.alive) return;
 
   state.phase = 'play';
-  yield* runPlayPhase(state, player);
+  emitTiming('phaseStart', { state, phase: 'play', target: player.id });
+  if (outcome.skipPlay) {
+    log(state, 'phase', `${nameOf(state, player.id)} 跳過出牌階段。`);
+  } else {
+    yield* runPlayPhase(state, player);
+  }
+  emitTiming('phaseEnd', { state, phase: 'play', target: player.id });
   if (state.winner || !player.alive) return;
 
   state.phase = 'discard';
+  emitTiming('phaseStart', { state, phase: 'discard', target: player.id });
   yield* runDiscardPhase(state, player);
+  emitTiming('phaseEnd', { state, phase: 'discard', target: player.id });
   if (state.winner || !player.alive) return;
 
   state.phase = 'end';
+  log(state, 'phase', `${nameOf(state, player.id)} 的回合結束。`);
 }
 
 export function* runGame(state: GameState): Generator<Request, GameResult, Response> {
@@ -864,6 +2057,21 @@ export function suitSymbol(suit: Card['suit']): string {
   }
 }
 
+export function suitLabel(suit: Card['suit']): string {
+  switch (suit) {
+    case 'spade':
+      return '黑桃';
+    case 'heart':
+      return '紅桃';
+    case 'club':
+      return '梅花';
+    case 'diamond':
+      return '方塊';
+    default:
+      return '未知';
+  }
+}
+
 export function rankLabel(rank: Card['rank']): string {
   switch (rank) {
     case 1:
@@ -879,7 +2087,7 @@ export function rankLabel(rank: Card['rank']): string {
   }
 }
 
-function natureLabel(nature: 'normal' | 'fire' | 'thunder'): string {
+function natureLabel(nature: Nature): string {
   switch (nature) {
     case 'fire':
       return '火焰';
