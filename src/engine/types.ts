@@ -227,6 +227,8 @@ export type Request =
       cardName?: CardName;
       source?: PlayerId;
       targets?: PlayerId[];
+      /** 目前已打出的【無懈可擊】張數；奇數代表原錦囊目前被抵消。 */
+      nullificationCount?: number;
     })
   | (RequestBase & {
       kind: 'chooseCards';

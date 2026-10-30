@@ -105,6 +105,7 @@ interface ResponseExtra {
   cardName?: CardName;
   source?: PlayerId;
   targets?: PlayerId[];
+  nullificationCount?: number;
 }
 
 function* askResponse(
@@ -1235,7 +1236,12 @@ function* askNullification(
         options,
         `是否對【${useLabel(use)}】使用【無懈可擊】？`,
         '無懈可擊',
-        { cardName: use.name, source: use.source, targets: use.targets },
+        {
+          cardName: use.name,
+          source: use.source,
+          targets: use.targets,
+          nullificationCount: count,
+        },
       );
       if (chosen) {
         const cards = takeFromHand(state, responder, chosen.cards);

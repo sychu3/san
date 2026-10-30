@@ -748,7 +748,7 @@ targetValue(j) = P(enemy) × threat(j) − P(ally) × allyValue(j)
 
 **目標**：把 160 張牌全部接入對局，`createDeck('full')` 成為預設牌堆，並建立可支撐武將技能的時機系統。
 
-**狀態**：✅ 已完成。160 張牌全部 `implemented: true`，預設對局使用完整牌堆；`npm run verify` 全綠，測試 83 個，全牌池 1,000 局模擬無崩潰、無死循環。
+**狀態**：✅ 已完成。160 張牌全部 `implemented: true`，預設對局使用完整牌堆；`npm run verify` 全綠，測試 87 個，全牌池 1,000 局模擬無崩潰、無死循環。
 
 #### 7.1.1 待實作卡牌
 
@@ -826,7 +826,7 @@ targetValue(j) = P(enemy) × threat(j) − P(ally) × allyValue(j)
 - 八把武器：青釭劍、寒冰劍、雌雄雙股劍、丈八蛇矛、青龍偃月刀、貫石斧、方天畫戟、麒麟弓。
 - 傷害管線：古錠刀 → 藤甲 → 白銀獅子 → 扣血 → 瀕死 → 鐵索傳導 → 受傷後時機。
 - 丈八蛇矛改為「先選目標、再選兩張手牌」，避免手牌多時選項平方成長。
-- 測試：83 個，含 27 個 M2 專項測試與 1,000 局全牌池模擬；`npm run verify` 全綠。
+- 測試：87 個，含 27 個 M2 專項測試與 1,000 局全牌池模擬；`npm run verify` 全綠。
 
 ### 7.2 M3：武將技能
 
@@ -1040,7 +1040,7 @@ M2 全卡池 ──→ M3 武將 ──→ M4 AI
 - 160 張完整牌表全部接入；預設使用完整牌堆。
 - 無懈可擊連鎖、延時錦囊與判定區、鐵索傳導、傷害管線、時機 hook 系統。
 - 純前端 UI、4 名 AI（只讀自身視角）、request id 驗證、視角遮蔽。
-- 83 個測試、1,000 局全牌池 AI 模擬、production build、`npm audit` 0 漏洞。
+- 87 個測試、1,000 局全牌池 AI 模擬、production build、`npm audit` 0 漏洞。
 - `README.md`、`RULES.md`、`SECURITY.md`、`DESIGN.md` 與部署設定。
 
 ### 10.2 下一步（M3 武將）

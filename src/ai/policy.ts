@@ -335,21 +335,37 @@ function chooseResponse(
       const harmful = request.cardName ? HARMFUL_TRICKS.has(request.cardName) : false;
       const beneficial = request.cardName ? BENEFICIAL_TRICKS.has(request.cardName) : false;
       const targets = request.targets ?? [];
-      const affectsSelf = targets.includes(self.id);
+      const currentlyNullified = (request.nullificationCount ?? 0) % 2 === 1;
+
+      // 自己剛使用的牌不主動取消；只有被對手無懈可擊後才考慮反制。
+      if (request.source === self.id && !currentlyNullified) return { type: 'pass' };
+
+      const gains = (player: PlayerView): boolean => {
+        if (request.cardName === 'peach_garden') return player.hp < player.maxHp;
+        return true;
+      };
+      const affectsSelf = targets.includes(self.id) && gains(self);
       const affectsAlly = targets.some((id) => {
         const player = view.players[id];
-        return Boolean(player) && player.id !== self.id && roleEnemyScore(view, self, player) <= 0;
+        return Boolean(player) && player.id !== self.id && roleEnemyScore(view, self, player) <= 0 && gains(player);
       });
       const affectsEnemy = targets.some((id) => {
         const player = view.players[id];
         return Boolean(player) && player.id !== self.id && roleEnemyScore(view, self, player) > 0;
       });
-      let chance = 0.05;
-      if (harmful && affectsSelf) chance = 0.9;
-      else if (harmful && affectsAlly) chance = 0.45;
-      else if (beneficial && affectsEnemy && !affectsSelf) chance = 0.4;
-      else if (beneficial && affectsSelf) chance = 0.9;
+
+      // 想要的結果：有害牌希望被抵消，有益牌希望生效。
+      let wantNullified: boolean;
+      if (beneficial) wantNullified = !(affectsSelf || affectsAlly) && affectsEnemy;
+      else if (harmful) wantNullified = affectsSelf || affectsAlly;
+      else wantNullified = affectsEnemy; // 未知牌種採保守判斷
+      if (beneficial || harmful) {
+        if (wantNullified === currentlyNullified) return { type: 'pass' };
+      }
+
+      const chance = affectsSelf ? 0.9 : affectsAlly ? 0.5 : affectsEnemy ? 0.4 : 0.05;
       if (nextFloat(rng) < chance) return { type: 'option', optionId: wuxie.id };
+      return { type: 'pass' };
     }
   }
 

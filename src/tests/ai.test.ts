@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { decide } from '../ai/policy';
 import { createGame, viewFor } from '../engine/state';
-import type { Card, GameState, PlayOption, Request } from '../engine/types';
+import type {
+  Card,
+  CardName,
+  GameState,
+  PlayOption,
+  PlayerId,
+  Request,
+  Response,
+  ResponseOption,
+} from '../engine/types';
 
 function card(
   id: number,
@@ -73,6 +82,80 @@ describe('AI 拆牌判斷', () => {
 
     const response = decide(view, request, { rngState: 1 });
     expect(response).toEqual({ type: 'card', card: 9005 });
+  });
+
+  function wuxieRequest(
+    source: PlayerId,
+    targets: PlayerId[],
+    cardName: CardName,
+    nullificationCount: number,
+  ): Request {
+    const wuxie: ResponseOption = {
+      id: 'wuxie',
+      label: '無懈可擊',
+      kind: 'respond',
+      cards: [9900],
+      asCard: 'nullification',
+    };
+    const pass: ResponseOption = { id: 'pass', label: '不出', kind: 'pass', cards: [] };
+    return {
+      id: 9,
+      player: 0,
+      prompt: '是否使用【無懈可擊】？',
+      kind: 'response',
+      need: 'wuxie',
+      options: [wuxie, pass],
+      context: '無懈可擊',
+      cardName,
+      source,
+      targets,
+      nullificationCount,
+    };
+  }
+
+  function countPlays(view: ReturnType<typeof viewFor>, request: Request): number {
+    let played = 0;
+    for (let rngState = 1; rngState <= 80; rngState += 1) {
+      const response: Response = decide(view, request, { rngState });
+      if (response.type === 'option') played += 1;
+    }
+    return played;
+  }
+
+  it('不會用無懈可擊抵消自己剛使用的五穀豐登', () => {
+    const state = fresh();
+    const request = wuxieRequest(0, [0, 1, 2], 'harvest', 0);
+    state.pending = request;
+    const view = viewFor(state, 0);
+
+    expect(countPlays(view, request)).toBe(0);
+  });
+
+  it('不會用無懈可擊抵消自己放下的閃電', () => {
+    const state = fresh();
+    const request = wuxieRequest(0, [0], 'lightning', 0);
+    state.pending = request;
+    const view = viewFor(state, 0);
+
+    expect(countPlays(view, request)).toBe(0);
+  });
+
+  it('自己的五穀豐登被敵方無懈可擊後，會反制', () => {
+    const state = fresh();
+    const request = wuxieRequest(0, [0, 1, 2], 'harvest', 1);
+    state.pending = request;
+    const view = viewFor(state, 0);
+
+    expect(countPlays(view, request)).toBeGreaterThan(0);
+  });
+
+  it('敵人使用無中生有時會考慮抵消', () => {
+    const state = fresh();
+    const request = wuxieRequest(1, [1], 'ex_nihilo', 0);
+    state.pending = request;
+    const view = viewFor(state, 0);
+
+    expect(countPlays(view, request)).toBeGreaterThan(0);
   });
 
   it('敵人只剩判定區延時錦囊時，放棄使用過河拆橋', () => {
