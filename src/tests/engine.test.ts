@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createGame, viewFor } from '../engine/state';
 import { getPlayOptions, runGame } from '../engine/engine';
+import { distance } from '../engine/rules';
 import type { Card } from '../engine/types';
 
 function card(id: number, name: Card['name'], suit: Card['suit'] = 'spade', rank: Card['rank'] = 7): Card {
@@ -134,6 +135,35 @@ describe('出牌選項', () => {
 
     player.equips.weapon = card(105, 'crossbow');
     expect(getPlayOptions(state, player).some((option) => option.asCard === 'slash')).toBe(true);
+  });
+
+  it('旁邊角色死亡後，下一位存活角色變成距離 1 且可被殺指定', () => {
+    const state = fresh();
+    const player = state.players[0]!;
+    player.hand = [card(120, 'slash')];
+    state.players[1]!.alive = false;
+    state.players[1]!.hp = 0;
+
+    expect(distance(state, 0, 2)).toBe(1);
+    const slashOptions = getPlayOptions(state, player).filter((option) => option.asCard === 'slash');
+    expect(slashOptions.flatMap((option) => option.targets)).toContain(2);
+    expect(slashOptions.find((option) => option.targets[0] === 2)?.label).toContain('距離 1');
+  });
+
+  it('已出殺的同一回合，需諸葛連弩才能繼續攻擊下一位', () => {
+    const state = fresh();
+    const player = state.players[0]!;
+    player.hand = [card(121, 'slash')];
+    player.slashUsed = 1;
+    state.players[1]!.alive = false;
+
+    expect(getPlayOptions(state, player).some((option) => option.asCard === 'slash')).toBe(false);
+
+    player.equips.weapon = card(122, 'crossbow');
+    const targets = getPlayOptions(state, player)
+      .filter((option) => option.asCard === 'slash')
+      .flatMap((option) => option.targets);
+    expect(targets).toContain(2);
   });
 
   it('朱雀羽扇可把普通殺當火殺', () => {

@@ -66,7 +66,7 @@ export function Seat({ player, isTurn, isSelf, waiting, compact = false }: Props
       <div className="seat__state">
         {player.chained && <span className="tag tag--chain">鐵索</span>}
         {player.wine && <span className="tag tag--wine">酒意</span>}
-        {player.slashUsed > 0 && <span className="tag">殺×{player.slashUsed}</span>}
+        {player.slashUsed > 0 && <span className="tag" title="本回合已使用的殺">已出殺 ×{player.slashUsed}</span>}
         {!player.alive && <span className="tag tag--dead">陣亡</span>}
       </div>
 

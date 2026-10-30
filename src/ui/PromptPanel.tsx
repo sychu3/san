@@ -1,5 +1,5 @@
 import type { Card, GameView, PlayerId, Request, Response } from '../engine/types';
-import { cardLabel } from '../data/cardMeta';
+import { cardLabel, isSlashCard } from '../data/cardMeta';
 import { CardView } from './CardView';
 
 interface Props {
@@ -32,6 +32,15 @@ export function PromptPanel({
   onRespond,
 }: Props) {
   const self = view.players[humanId];
+  const actionOptions = request.kind === 'action' ? request.options.filter((option) => option.kind !== 'pass') : [];
+  const passOption = request.kind === 'action' ? request.options.find((option) => option.kind === 'pass') : undefined;
+  const slashHeld = self?.hand?.some((card) => isSlashCard(card.name)) ?? false;
+  const slashLocked =
+    request.kind === 'action' &&
+    Boolean(self) &&
+    slashHeld &&
+    self!.slashUsed >= 1 &&
+    self!.equips.weapon?.name !== 'crossbow';
 
   return (
     <section className="panel prompt" aria-live="polite">
@@ -43,18 +52,35 @@ export function PromptPanel({
       {request.kind === 'action' && (
         <>
           <p className="prompt__hint">{request.prompt}</p>
-          <div className="option-grid">
-            {request.options.map((option) => (
+          {slashLocked && (
+            <p className="prompt__warn">
+              本回合已使用【殺】，每回合限一次；裝備【諸葛連弩】可解除限制。仍可使用其他牌或結束出牌階段。
+            </p>
+          )}
+          {actionOptions.length > 6 && (
+            <p className="prompt__small prompt__small--scroll">行動較多，可捲動清單查看全部選項。</p>
+          )}
+          <div className="option-grid option-grid--actions">
+            {actionOptions.map((option) => (
               <button
                 key={option.id}
                 type="button"
-                className={`option ${option.kind === 'pass' ? 'option--pass' : ''}`}
+                className="option"
                 onClick={() => onRespond({ type: 'option', optionId: option.id })}
               >
                 {option.label}
               </button>
             ))}
           </div>
+          {passOption && (
+            <button
+              type="button"
+              className="option option--pass option--endturn"
+              onClick={() => onRespond({ type: 'option', optionId: passOption.id })}
+            >
+              {passOption.label}
+            </button>
+          )}
         </>
       )}
 

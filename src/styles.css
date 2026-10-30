@@ -743,13 +743,50 @@ button.card:hover:not(:disabled) {
   color: var(--muted);
 }
 
+.prompt__small--scroll {
+  color: #c9b78f;
+  font-style: italic;
+}
+
+.prompt__warn {
+  margin: 8px 0 2px;
+  padding: 7px 9px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #f0c891;
+  background: rgba(200, 164, 93, 0.1);
+  border-left: 2px solid var(--gold);
+  border-radius: 0 5px 5px 0;
+}
+
 .option-grid {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  max-height: 320px;
+  max-height: min(48vh, 420px);
   overflow-y: auto;
-  padding-right: 2px;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(200, 164, 93, 0.5) transparent;
+}
+
+.option-grid::-webkit-scrollbar {
+  width: 8px;
+}
+
+.option-grid::-webkit-scrollbar-thumb {
+  background: rgba(200, 164, 93, 0.42);
+  border-radius: 4px;
+}
+
+.option-grid::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.option--endturn {
+  margin-top: 8px;
+  justify-content: center;
+  flex: none;
 }
 
 .option {
