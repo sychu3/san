@@ -1,11 +1,14 @@
 import type {
   Card,
   CardName,
+  Difficulty,
   GameView,
   PlayerId,
   PlayerView,
+  PublicEvent,
   Request,
   Response,
+  Role,
 } from '../engine/types';
 import { CARD_META } from '../data/cardMeta';
 import type { RngState } from '../engine/rng';
@@ -16,30 +19,132 @@ import { nextFloat } from '../engine/rng';
  * 目標評分依角色與公開資訊（主公已知、自己身份已知）決定。
  */
 
+/**
+ * AI 的跨回合記憶：只由公開事件（`GameView.events`）更新。
+ * 不保存任何手牌、牌堆順序或未公開身份。
+ */
+export interface AiMemory {
+  lastEventSeq: number;
+  /** 由公開事件推得的「疑似反賊」分數（越高越像反賊）。 */
+  rebelScore: Map<PlayerId, number>;
+  /** 死亡時已公開的身份。 */
+  knownRole: Map<PlayerId, Role>;
+  /** 公開打出過的【閃】／【桃】次數（高手難度的手牌推測）。 */
+  playedDodge: Map<PlayerId, number>;
+  playedPeach: Map<PlayerId, number>;
+}
+
+export function createAiMemory(): AiMemory {
+  return {
+    lastEventSeq: 0,
+    rebelScore: new Map(),
+    knownRole: new Map(),
+    playedDodge: new Map(),
+    playedPeach: new Map(),
+  };
+}
+
+function bump(
+  map: Map<number, number>,
+  id: number,
+  delta: number,
+  min = -20,
+  max = 20,
+): void {
+  const next = Math.max(min, Math.min(max, (map.get(id) ?? 0) + delta));
+  map.set(id, next);
+}
+
+function applyEvent(view: GameView, memory: AiMemory, event: PublicEvent): void {
+  const lordId = view.players.find((player) => player.role === 'lord')?.id ?? null;
+
+  if (event.kind === 'death' && event.target !== null && event.role) {
+    memory.knownRole.set(event.target, event.role);
+    memory.rebelScore.set(
+      event.target,
+      event.role === 'rebel' ? 20 : event.role === 'spy' ? 8 : -20,
+    );
+    return;
+  }
+
+  if (event.kind === 'damage' && event.source !== null && event.target !== null) {
+    if (event.target === lordId) bump(memory.rebelScore, event.source, 4);
+    const known = memory.knownRole.get(event.target);
+    if (known === 'loyal') bump(memory.rebelScore, event.source, 3);
+    if (known === 'rebel') bump(memory.rebelScore, event.source, -2);
+    if (event.source === lordId) bump(memory.rebelScore, event.target, 3);
+    return;
+  }
+
+  if (event.kind === 'use' && event.cardName && event.source !== null) {
+    if (event.cardName === 'dodge') bump(memory.playedDodge, event.source, 1, 0, 20);
+    if (event.cardName === 'peach') bump(memory.playedPeach, event.source, 1, 0, 20);
+    if (event.target === lordId && HARMFUL_TRICKS.has(event.cardName)) {
+      bump(memory.rebelScore, event.source, 2);
+    }
+    if (event.target === lordId && BENEFICIAL_TRICKS.has(event.cardName)) {
+      bump(memory.rebelScore, event.source, -1);
+    }
+    return;
+  }
+
+  if (event.kind === 'save' && event.target === lordId && event.source !== null) {
+    bump(memory.rebelScore, event.source, -4);
+  }
+}
+
+/** 用公開事件更新 AI 記憶（增量，只處理新事件）。 */
+export function updateMemory(view: GameView, memory: AiMemory): void {
+  for (const event of view.events) {
+    if (event.seq <= memory.lastEventSeq) continue;
+    memory.lastEventSeq = event.seq;
+    applyEvent(view, memory, event);
+  }
+}
+
 function selfOf(view: GameView): PlayerView {
   const self = view.players.find((player) => player.id === view.pending?.player);
   if (!self) throw new Error('AI view has no pending player');
   return self;
 }
 
+/**
+ * 目前這一次決策使用的記憶與難度。
+ * `decide()` 是同步且不可重入，因此在入口設定一次即可。
+ */
+let activeMemory: AiMemory | undefined;
+let activeDifficulty: Difficulty = 'normal';
+
+/** 由身份信念對敵意分數做調整；新手難度完全忽略。 */
+function beliefAdjust(self: PlayerView, target: PlayerView): number {
+  if (activeDifficulty === 'easy' || !activeMemory) return 0;
+  const score = activeMemory.rebelScore.get(target.id) ?? 0;
+  if (score === 0) return 0;
+  const weight = activeDifficulty === 'hard' ? 0.6 : 0.4;
+  if (self.role === 'rebel') return -score * weight;
+  if (self.role === 'spy') return score * weight * 0.5;
+  return score * weight;
+}
+
 function roleEnemyScore(view: GameView, self: PlayerView, target: PlayerView): number {
   if (target.id === self.id || !target.alive) return -1;
+  let base: number;
   if (self.role === 'rebel') {
     if (target.role === 'lord') return 100;
-    return 15;
-  }
-  if (self.role === 'loyal') {
+    base = 15;
+  } else if (self.role === 'loyal') {
     if (target.role === 'lord') return -100;
-    return 40;
-  }
-  if (self.role === 'spy') {
+    base = 40;
+  } else if (self.role === 'spy') {
     const alive = view.players.filter((player) => player.alive).length;
     // 只要還有其他人，殺主公等於讓反賊獲勝；先清除其他人，最後才單挑主公。
     if (target.role === 'lord') return alive <= 2 ? 120 : -40;
-    return 45;
+    base = 45;
+  } else {
+    // 主公：其他人都可能是反賊或內奸。
+    base = target.role === 'loyal' ? -30 : 45;
   }
-  // 主公：其他人都可能是反賊或內奸。
-  return target.role === 'loyal' ? -30 : 45;
+  return base + beliefAdjust(self, target);
 }
 
 function cardValue(name: CardName): number {
@@ -85,8 +190,9 @@ function cardValue(name: CardName): number {
   }
 }
 
-function jitter(rng: RngState, amount = 6): number {
-  return nextFloat(rng) * amount;
+function jitter(rng: RngState, amount?: number): number {
+  const base = amount ?? (activeDifficulty === 'easy' ? 14 : activeDifficulty === 'hard' ? 3 : 6);
+  return nextFloat(rng) * base;
 }
 
 function isSlashName(name: CardName): boolean {
@@ -240,6 +346,10 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
               score += name === 'fire_slash' ? 25 : name === 'slash' ? -30 : 0;
             }
             if (target.equips.armor?.name === 'renwang') score -= 15;
+            // 高手：對手已公開打出多張【閃】，推測其手上【閃】變少。
+            if (activeDifficulty === 'hard') {
+              score += (activeMemory?.playedDodge.get(target.id) ?? 0) * 3;
+            }
           }
         }
         // 有實體【殺】時優先使用，不要把兩張手牌浪費在丈八蛇矛上。
@@ -257,8 +367,8 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       }
     }
 
-    // 主動技能的評分。
-    if (option.kind === 'play' && option.skill) {
+    // 主動技能的評分；新手難度傾向不使用技能。
+    if (option.kind === 'play' && option.skill && activeDifficulty !== 'easy') {
       const firstId = option.targets[0];
       const first = firstId === undefined ? null : view.players[firstId] ?? null;
       const firstEnemy = first ? roleEnemyScore(view, self, first) : 0;
@@ -559,7 +669,18 @@ function equipPriority(card: Card): number {
   }
 }
 
-export function decide(view: GameView, request: Request, rng: RngState): Response {
+export function decide(
+  view: GameView,
+  request: Request,
+  rng: RngState,
+  memory: AiMemory = createAiMemory(),
+  difficulty: Difficulty = 'normal',
+): Response {
+  // `decide` 同步且不可重入；設定本次決策的記憶與難度。
+  activeMemory = memory;
+  activeDifficulty = difficulty;
+  updateMemory(view, memory);
+
   switch (request.kind) {
     case 'action':
       return chooseAction(view, request, rng);

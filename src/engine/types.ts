@@ -91,6 +91,22 @@ export interface CardUse {
 }
 
 export type Role = 'lord' | 'loyal' | 'rebel' | 'spy';
+export type Difficulty = 'easy' | 'normal' | 'hard';
+
+/**
+ * 公開事件：只包含全桌都看得到的資訊，供 AI 更新身份信念。
+ * AI 不得從中取得手牌、未公開身份或牌堆順序。
+ */
+export interface PublicEvent {
+  seq: number;
+  kind: 'use' | 'damage' | 'death' | 'save';
+  source: PlayerId | null;
+  target: PlayerId | null;
+  cardName?: CardName;
+  amount?: number;
+  /** 只有 kind === 'death' 且身份公開時才有。 */
+  role?: Role;
+}
 export type Kingdom = 'wei' | 'shu' | 'wu' | 'qun';
 export type Gender = 'male' | 'female';
 
@@ -172,6 +188,9 @@ export interface GameState {
   winner: Winner | null;
   /** 判定區延時錦囊的「視為牌名」；轉化牌（如【國色】）需要靠這個對照。 */
   delayedNames: Record<number, CardName>;
+  /** 公開事件串流；供 AI 以公開資訊做身份推理。 */
+  publicEvents: PublicEvent[];
+  eventSeq: number;
   log: LogEntry[];
   logSeq: number;
   requestSeq: number;
@@ -310,6 +329,8 @@ export interface GameView {
   deckCount: number;
   discardCount: number;
   discardTop: Card | null;
+  /** 最近的公開事件（最多 200 筆），供 AI 身份推理。 */
+  events: PublicEvent[];
   log: LogEntry[];
   pending: Request | null;
   waitingFor: PlayerId | null;

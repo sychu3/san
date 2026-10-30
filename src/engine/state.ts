@@ -18,7 +18,7 @@ import { randomSeed, shuffle } from './rng';
 import { nextAliveId } from './rules';
 import { hasSkill, skillsOf } from './skills';
 
-export const GAME_VERSION = '0.4.0-m3';
+export const GAME_VERSION = '0.5.0-m4';
 
 export interface CreateGameOptions {
   seed?: number;
@@ -106,6 +106,8 @@ export function createGame(options: CreateGameOptions = {}): GameState {
     turnCount: 1,
     winner: null,
     delayedNames: {},
+    publicEvents: [],
+    eventSeq: 0,
     log: [],
     logSeq: 0,
     requestSeq: 0,
@@ -413,6 +415,7 @@ export function viewFor(state: GameState, viewerId: PlayerId, godMode = false): 
     deckCount: state.deck.length,
     discardCount: state.discard.length,
     discardTop: state.discard.at(-1) ? snapshotCard(state.discard.at(-1)!) : null,
+    events: state.publicEvents.slice(-200).map((event) => ({ ...event })),
     log: state.log.slice(-200).map((entry) => ({ ...entry })),
     pending,
     waitingFor: state.pending ? state.pending.player : null,

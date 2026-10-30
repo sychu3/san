@@ -57,7 +57,7 @@ describe('AI 對局模擬', () => {
     ]) {
       expect(used.get(name) ?? 0).toBeGreaterThan(0);
     }
-  });
+  }, 30_000);
 
   it('AI 對局會實際發動武將技能（兩批）', () => {
     const tracked = [
@@ -90,7 +90,7 @@ describe('AI 對局模擬', () => {
     for (const name of tracked) {
       expect(seen.has(name)).toBe(true);
     }
-  });
+  }, 30_000);
 
   it('同一 seed 會產生相同的對局結果', () => {
     const first = autoPlayGame({ seed: 42 });

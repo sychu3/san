@@ -9,6 +9,14 @@ import { PromptPanel } from './ui/PromptPanel';
 import { LogPanel } from './ui/LogPanel';
 import { CardView } from './ui/CardView';
 
+const DIFFICULTY_LABELS: Record<string, string> = {
+  easy: '新手',
+  normal: '進階',
+  hard: '高手',
+};
+
+const DIFFICULTY_ORDER = ['easy', 'normal', 'hard'] as const;
+
 const ROLE_GOAL: Record<string, string> = {
   lord: '消滅所有反賊與內奸。誤殺忠臣會棄置所有牌。',
   loyal: '保護主公，協助主公消滅反賊與內奸。',
@@ -80,7 +88,7 @@ export default function App() {
   };
 
   const restart = () => {
-    const next = new GameController({ seed: randomSeed() });
+    const next = new GameController({ seed: randomSeed(), difficulty: controller.getDifficulty() });
     setController(next);
     setView(next.getView());
     setSelectedCards([]);
@@ -100,6 +108,18 @@ export default function App() {
           <span className="topbar__seed" title="本局隨機種子">
             seed {view.seed}
           </span>
+          <button
+            type="button"
+            className="ghost-btn"
+            title="切換 AI 難度（新手／進階／高手）"
+            onClick={() => {
+              const current = DIFFICULTY_ORDER.indexOf(controller.getDifficulty());
+              const next = DIFFICULTY_ORDER[(current + 1) % DIFFICULTY_ORDER.length]!;
+              controller.setDifficulty(next);
+            }}
+          >
+            AI：{DIFFICULTY_LABELS[controller.getDifficulty()] ?? controller.getDifficulty()}
+          </button>
           <button
             type="button"
             className={`ghost-btn ${view.godMode ? 'ghost-btn--on' : ''}`}
@@ -234,6 +254,7 @@ export default function App() {
                 <li>結算：距離、攻擊範圍、鐵索傳導、瀕死求桃、死亡獎懲、勝負判定。</li>
                 <li>標準 25 名武將技能全部啟用，第二批包含：反饋、鬼才、剛烈、突襲、裸衣、天妒、遺計、傾國、洛神、觀星、空城、鐵騎、馬術、奇襲、克己、苦肉、英姿、反間、國色、流離、謙遜、連營、結姻、梟姬。</li>
                 <li>需要選牌或選目標的技能（仁德、制衡、青囊、離間、龍膽、武聖等）會先按行動選項，再依提示選牌。</li>
+                <li>右上角「AI」可切換難度：新手（不推理、較隨機）、進階（用公開事件推理）、高手（推理更強並推測手牌）。AI 只讀自己的視角。</li>
               </ul>
               <h3>操作</h3>
               <p>出牌階段按右側行動按鈕。需要選牌時，點擊下方手牌後確認。</p>

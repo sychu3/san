@@ -1,7 +1,15 @@
-import type { GameResult, GameState, GameView, PlayerId, Request, Response } from '../engine/types';
+import type {
+  Difficulty,
+  GameResult,
+  GameState,
+  GameView,
+  PlayerId,
+  Request,
+  Response,
+} from '../engine/types';
 import { createGame, viewFor, type CreateGameOptions } from '../engine/state';
 import { runGame } from '../engine/engine';
-import { decide } from '../ai/policy';
+import { createAiMemory, decide, type AiMemory } from '../ai/policy';
 import type { RngState } from '../engine/rng';
 
 /**
@@ -22,14 +30,19 @@ export class GameController {
   private result: GameResult | null = null;
   private snapshot: GameView;
   private lastHumanRequestId: number | null = null;
+  private difficulty: Difficulty;
+  private readonly aiMemory = new Map<PlayerId, AiMemory>();
 
-  constructor(options: CreateGameOptions & { humanId?: PlayerId; godMode?: boolean } = {}) {
+  constructor(
+    options: CreateGameOptions & { humanId?: PlayerId; godMode?: boolean; difficulty?: Difficulty } = {},
+  ) {
     this.state = createGame(options);
     this.humanId = options.humanId ?? 0;
     if (!this.state.players[this.humanId]) {
       throw new Error(`Invalid human player id: ${this.humanId}`);
     }
     this.godMode = options.godMode ?? false;
+    this.difficulty = options.difficulty ?? 'normal';
     this.aiRng = { rngState: (this.state.seed ^ 0x9e3779b9) >>> 0 || 1 };
     this.generator = runGame(this.state);
     this.snapshot = this.makeView();
@@ -46,6 +59,25 @@ export class GameController {
 
   isGodMode(): boolean {
     return this.godMode;
+  }
+
+  getDifficulty(): Difficulty {
+    return this.difficulty;
+  }
+
+  setDifficulty(difficulty: Difficulty): void {
+    if (this.difficulty === difficulty) return;
+    this.difficulty = difficulty;
+    this.emit();
+  }
+
+  private memoryFor(player: PlayerId): AiMemory {
+    let memory = this.aiMemory.get(player);
+    if (!memory) {
+      memory = createAiMemory();
+      this.aiMemory.set(player, memory);
+    }
+    return memory;
   }
 
   setGodMode(enabled: boolean): void {
@@ -102,7 +134,7 @@ export class GameController {
       const aiView = viewFor(this.state, request.player);
       let aiResponse: Response;
       try {
-        aiResponse = decide(aiView, request, this.aiRng);
+        aiResponse = decide(aiView, request, this.aiRng, this.memoryFor(request.player), this.difficulty);
       } catch {
         // AI 不應讓整局崩潰；遇到非預期狀態時採保守合法回應。
         aiResponse = fallbackResponse(request);

@@ -9,6 +9,7 @@ import type {
   PlayOption,
   PlayerId,
   PlayerState,
+  PublicEvent,
   Request,
   Response,
   ResponseOption,
@@ -56,6 +57,17 @@ const MAX_REQUESTS_PER_TURN = 4000;
 /* ------------------------------------------------------------------ */
 /* 請求工具                                                            */
 /* ------------------------------------------------------------------ */
+
+const MAX_PUBLIC_EVENTS = 200;
+
+/** 記錄一筆公開事件；只放全桌可見的資訊，供 AI 身份推理。 */
+function recordEvent(state: GameState, event: Omit<PublicEvent, 'seq'>): void {
+  state.eventSeq += 1;
+  state.publicEvents.push({ seq: state.eventSeq, ...event });
+  if (state.publicEvents.length > MAX_PUBLIC_EVENTS) {
+    state.publicEvents.splice(0, state.publicEvents.length - MAX_PUBLIC_EVENTS);
+  }
+}
 
 function baseRequest(state: GameState, player: PlayerId, prompt: string) {
   state.requestSeq += 1;
@@ -1031,6 +1043,9 @@ function* resolvePlayOption(
       targets.length > 0 ? `→ ${targets.map((target) => nameOf(state, target.id)).join('、')}` : ''
     }。`,
   );
+  for (const target of targets.length > 0 ? targets : [null]) {
+    recordEvent(state, { kind: 'use', source: player.id, target: target?.id ?? null, cardName: virtualName });
+  }
 
   const meta = CARD_META[virtualName];
 
@@ -1839,6 +1854,7 @@ function* askForShaSelf(
   player.marks.slash_played = true;
   checkLianying(state, player);
   const name = chosen.asCard ?? cards[0]!.name;
+  recordEvent(state, { kind: 'use', source: player.id, target: target?.id ?? null, cardName: name });
   log(
     state,
     'play',
@@ -1956,7 +1972,13 @@ function* askForShanSelf(
   const card = cards[0];
   if (!card) return false;
   pushDiscard(state, cards);
-  log(state, 'play', `${nameOf(state, target.id)} 打出【${cardLabel(card.name)}】。`);
+  log(state, 'play', `${nameOf(state, target.id)} 打出【${cardLabel(chosen.asCard ?? card.name)}】。`);
+  recordEvent(state, {
+    kind: 'use',
+    source: target.id,
+    target: null,
+    cardName: chosen.asCard ?? card.name,
+  });
   return true;
 }
 
@@ -2723,6 +2745,13 @@ function* dealDamage(
     'damage',
     `${sourceName} 對 ${nameOf(state, target.id)} 造成 ${amount} 點${natureLabel(nature)}傷害（${reason}）。`,
   );
+  recordEvent(state, {
+    kind: 'damage',
+    source: sourceId,
+    target: target.id,
+    cardName: damageCardName,
+    amount,
+  });
 
   // 奸雄：受到傷害後，可獲得造成此傷害的牌。
   if (hasSkill(target, 'jianxiong')) {
@@ -3003,6 +3032,12 @@ function* runDying(
         log(state, 'heal', `${nameOf(state, dying.id)} 的【救援】令此【桃】回復值 +1。`);
       }
       heal(state, dying, 1 + rescueBonus, cardLabel(virtualName));
+      recordEvent(state, {
+        kind: 'save',
+        source: responder.id,
+        target: dying.id,
+        cardName: virtualName,
+      });
       if (dying.hp > 0) return true;
     }
     if (dying.hp > 0) return true;
@@ -3025,6 +3060,7 @@ function* killPlayer(
     'death',
     `${nameOf(state, victim.id)} 死亡，身份是${ROLE_LABELS[victim.role] ?? victim.role}。`,
   );
+  recordEvent(state, { kind: 'death', source: killerId, target: victim.id, role: victim.role });
 
   discardAllCards(state, victim, `${nameOf(state, victim.id)} 死亡棄牌`, false);
 
