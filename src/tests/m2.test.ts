@@ -473,6 +473,26 @@ describe('傷害管線與鐵索傳導', () => {
     expect(manual.players[1]!.chained).toBe(false);
     expect(manual.players[2]!.chained).toBe(false);
   });
+
+  it('鐵索傳導不會串接：三名橫置角色各只受到一次傳導', () => {
+    const state = fresh();
+    state.players[0]!.hand = [card(170, 'fire_slash', 'heart', 4)];
+    state.players[1]!.chained = true;
+    state.players[2]!.chained = true;
+    state.players[3]!.chained = true;
+
+    playAction(state, 0, (option) => option.asCard === 'fire_slash' && option.targets[0] === 1);
+
+    expect(state.players[1]!.hp).toBe(4);
+    expect(state.players[2]!.hp).toBe(4);
+    expect(state.players[3]!.hp).toBe(4);
+    expect(state.players[1]!.chained).toBe(false);
+    expect(state.players[2]!.chained).toBe(false);
+    expect(state.players[3]!.chained).toBe(false);
+    // 只有原始目標會觸發一次；被傳導者不會再往外傳導。
+    const triggers = state.log.filter((entry) => entry.text.includes('鐵索連環被觸發'));
+    expect(triggers).toHaveLength(1);
+  });
 });
 
 describe('八把武器', () => {

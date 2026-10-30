@@ -2174,8 +2174,9 @@ function* dealDamage(
     }
   }
 
-  // 鐵索連環：屬性傷害傳導。同一條連鎖中每個角色只傳導一次。
-  if (wasChained && nature !== 'normal') {
+  // 鐵索連環：屬性傷害傳導。同一條連鎖中每個角色只傳導一次，
+  // 且傳導造成的傷害不再往外傳導（避免 A→B→C 的連鎖串接）。
+  if (wasChained && nature !== 'normal' && !options.fromChain) {
     const chainSet = options.chainSet ?? new Set<PlayerId>();
     chainSet.add(target.id);
     log(state, 'damage', `${nameOf(state, target.id)} 的鐵索連環被觸發。`);
