@@ -1,5 +1,6 @@
 import type { Card, PlayerView } from '../engine/types';
 import { KINGDOM_LABELS, ROLE_LABELS } from '../data/generals';
+import { SKILL_META } from '../engine/skills';
 import { CardView } from './CardView';
 
 interface Props {
@@ -62,6 +63,16 @@ export function Seat({ player, isTurn, isSelf, waiting, compact = false }: Props
         ))}
         {player.maxHp === 0 && <span className="seat__hpnum">—</span>}
       </div>
+
+      {player.skills.length > 0 && (
+        <div className="seat__skills" title="武將技能">
+          {player.skills.map((id) => (
+            <span key={id} className="tag tag--skill">
+              {SKILL_META[id]?.name ?? id}
+            </span>
+          ))}
+        </div>
+      )}
 
       <div className="seat__state">
         {player.chained && <span className="tag tag--chain">鐵索</span>}

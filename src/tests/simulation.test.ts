@@ -59,6 +59,22 @@ describe('AI 對局模擬', () => {
     }
   });
 
+  it('AI 對局會實際發動首批武將技能', () => {
+    const tracked = ['奸雄', '制衡', '集智', '閉月', '離間', '青囊', '無雙'];
+    const seen = new Set<string>();
+    for (let seed = 1; seed <= 400; seed += 1) {
+      const result = autoPlayGame({ seed, maxRequests: 800_000 });
+      for (const entry of result.log) {
+        for (const name of tracked) {
+          if (entry.text.includes(`【${name}】`)) seen.add(name);
+        }
+      }
+    }
+    for (const name of tracked) {
+      expect(seen.has(name)).toBe(true);
+    }
+  });
+
   it('同一 seed 會產生相同的對局結果', () => {
     const first = autoPlayGame({ seed: 42 });
     const second = autoPlayGame({ seed: 42 });

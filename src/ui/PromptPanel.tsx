@@ -41,7 +41,8 @@ export function PromptPanel({
     Boolean(self) &&
     slashHeld &&
     self!.slashUsed >= 1 &&
-    self!.equips.weapon?.name !== 'crossbow';
+    self!.equips.weapon?.name !== 'crossbow' &&
+    !self!.skills.includes('paoxiao');
 
   return (
     <section className="panel prompt" aria-live="polite">
@@ -55,7 +56,7 @@ export function PromptPanel({
           <p className="prompt__hint">{request.prompt}</p>
           {slashLocked && (
             <p className="prompt__warn">
-              本回合已使用【殺】，每回合限一次；裝備【諸葛連弩】可解除限制。仍可使用其他牌或結束出牌階段。
+              本回合已使用【殺】，每回合限一次；裝備【諸葛連弩】或擁有【咆哮】可解除限制。仍可使用其他牌或結束出牌階段。
             </p>
           )}
           {actionOptions.length > 6 && (

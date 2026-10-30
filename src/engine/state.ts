@@ -16,8 +16,9 @@ import { cardLabel } from '../data/cardMeta';
 import { getGeneral, MVP_GENERAL_IDS, ROLE_LABELS } from '../data/generals';
 import { randomSeed, shuffle } from './rng';
 import { nextAliveId } from './rules';
+import { skillsOf } from './skills';
 
-export const GAME_VERSION = '0.2.0-m2';
+export const GAME_VERSION = '0.3.0-m3';
 
 export interface CreateGameOptions {
   seed?: number;
@@ -361,6 +362,7 @@ export function viewFor(state: GameState, viewerId: PlayerId, godMode = false): 
       seat: player.seat,
       name: general.name,
       generalName: general.name,
+      skills: skillsOf(player).map((skill) => skill.id),
       kingdom: general.kingdom,
       gender: general.gender,
       maxHp: player.maxHp,

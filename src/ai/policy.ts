@@ -247,6 +247,25 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       }
     }
 
+    // 主動技能的評分。
+    if (option.kind === 'play' && option.skill) {
+      const firstId = option.targets[0];
+      const first = firstId === undefined ? null : view.players[firstId] ?? null;
+      const firstEnemy = first ? roleEnemyScore(view, self, first) : 0;
+      if (option.skill === 'rende') {
+        score += firstEnemy <= 0 && self.handCount > self.hp ? 30 : -25;
+      } else if (option.skill === 'zhiheng') {
+        score += self.handCount >= 3 ? 28 : 5;
+      } else if (option.skill === 'qingnang') {
+        score += first && first.hp < first.maxHp && firstEnemy <= 0 ? 40 : -30;
+      } else if (option.skill === 'lijian') {
+        const secondId = option.targets[1];
+        const second = secondId === undefined ? null : view.players[secondId] ?? null;
+        const secondEnemy = second ? roleEnemyScore(view, self, second) : 0;
+        score += firstEnemy >= 0 && secondEnemy >= 0 && (firstEnemy > 0 || secondEnemy > 0) ? 35 : -20;
+      }
+    }
+
     if (hasHealTarget && option.asCard === 'peach' && option.targets[0] !== self.id) {
       score -= 15;
     }

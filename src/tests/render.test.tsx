@@ -27,6 +27,17 @@ describe('UI 渲染煙霧測試', () => {
     expect(html).toContain('閃電');
   });
 
+  it('Seat 會顯示武將技能名稱', () => {
+    const state = createGame({ seed: 1 });
+    const view = viewFor(state, 0);
+    view.players[0]!.skills = ['wusheng', 'paoxiao'];
+    const html = renderToString(
+      <Seat player={view.players[0]!} isTurn isSelf waiting={false} />,
+    );
+    expect(html).toContain('武聖');
+    expect(html).toContain('咆哮');
+  });
+
   it('PromptPanel 會顯示五穀豐登的翻開牌選項', () => {
     const state = createGame({ seed: 1 });
     const view = viewFor(state, 0);

@@ -274,6 +274,8 @@ export interface PlayerView {
   seat: number;
   name: string;
   generalName: string;
+  /** 技能 id 清單；主公技只在該角色是主公時出現。 */
+  skills: string[];
   kingdom: Kingdom;
   gender: Gender;
   maxHp: number;

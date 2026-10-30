@@ -1,7 +1,7 @@
 {
   "name": "sanguosha-junzheng",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "非官方三國殺・軍爭篇 Web 版（1 人對 4 AI）",
   "license": "UNLICENSED",

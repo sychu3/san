@@ -1,4 +1,5 @@
 import type { Card, GameState, PlayerId, PlayerState } from './types';
+import { hasSkill } from './skills';
 
 export function alivePlayers(state: GameState): PlayerState[] {
   return state.players.filter((player) => player.alive);
@@ -94,6 +95,7 @@ export function isBlack(card: Card): boolean {
 
 export function slashLimitReached(player: PlayerState): boolean {
   if (player.equips.weapon?.name === 'crossbow') return false;
+  if (hasSkill(player, 'paoxiao')) return false;
   return player.slashUsed >= 1;
 }
 
