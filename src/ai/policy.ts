@@ -273,6 +273,12 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
         const second = secondId === undefined ? null : view.players[secondId] ?? null;
         const secondEnemy = second ? roleEnemyScore(view, self, second) : 0;
         score += firstEnemy >= 0 && secondEnemy >= 0 && (firstEnemy > 0 || secondEnemy > 0) ? 35 : -20;
+      } else if (option.skill === 'kurou') {
+        score += self.hp >= 2 ? 20 : -40;
+      } else if (option.skill === 'fanjian') {
+        score += firstEnemy > 0 ? 40 : -30;
+      } else if (option.skill === 'jieyin') {
+        score += self.hp < self.maxHp ? 35 : -10;
       }
     }
 
@@ -408,10 +414,15 @@ function chooseResponse(
     }
     const skill = skills[0];
     if (skill) {
-      if (skill.skill === 'green_dragon' && !(self.hand ?? []).some((card) => isSlashName(card.name))) {
-        // 沒有實體【殺】時仍可能用丈八蛇矛；讓引擎的選項決定。
+      const id = skill.skill;
+      // 鬼才、流離預設不發動；裸衣沒有【殺】時也不發動。
+      if (id === 'guicai' || id === 'liuli') {
+        return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
       }
-      if (skill.skill === 'rock_axe' && self.handCount < 2 && pass) {
+      if (id === 'luoyi' && !(self.hand ?? []).some((card) => isSlashName(card.name))) {
+        return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+      }
+      if (id === 'rock_axe' && self.handCount < 2 && pass) {
         return { type: 'option', optionId: pass.id };
       }
       return { type: 'option', optionId: skill.id };
@@ -565,6 +576,10 @@ export function decide(view: GameView, request: Request, rng: RngState): Respons
     case 'chooseRevealed': {
       const best = [...request.cards].sort((a, b) => cardValue(b.name) - cardValue(a.name))[0];
       return best ? { type: 'card', card: best.id } : { type: 'pass' };
+    }
+    case 'chooseFrom': {
+      // 觀星等：預設保留牌堆頂順序（不移動）。
+      return { type: 'cards', cards: request.cards.slice(0, request.min).map((card) => card.id) };
     }
     default:
       return { type: 'pass' };

@@ -13,12 +13,12 @@ import type {
 } from './types';
 import { createDeck } from '../data/cards';
 import { cardLabel } from '../data/cardMeta';
-import { getGeneral, MVP_GENERAL_IDS, ROLE_LABELS } from '../data/generals';
+import { ALL_GENERAL_IDS, getGeneral, ROLE_LABELS } from '../data/generals';
 import { randomSeed, shuffle } from './rng';
 import { nextAliveId } from './rules';
-import { skillsOf } from './skills';
+import { hasSkill, skillsOf } from './skills';
 
-export const GAME_VERSION = '0.3.0-m3';
+export const GAME_VERSION = '0.4.0-m3';
 
 export interface CreateGameOptions {
   seed?: number;
@@ -53,7 +53,7 @@ export function log(state: GameState, kind: LogKind, text: string): void {
 export function createGame(options: CreateGameOptions = {}): GameState {
   const seed = (options.seed ?? randomSeed()) >>> 0;
   const rng = { rngState: seed || 1 };
-  const generalIds = options.generalIds ?? MVP_GENERAL_IDS;
+  const generalIds = options.generalIds ?? ALL_GENERAL_IDS;
   if (generalIds.length < 5) {
     throw new Error('至少需要 5 名武將');
   }
@@ -105,6 +105,7 @@ export function createGame(options: CreateGameOptions = {}): GameState {
     phase: 'prepare',
     turnCount: 1,
     winner: null,
+    delayedNames: {},
     log: [],
     logSeq: 0,
     requestSeq: 0,
@@ -194,6 +195,11 @@ export function removeCardFromPlayer(
       player.equips[slot] = null;
       if (triggerLoss && card.name === 'silver_lion' && player.alive) {
         heal(state, player, 1, '失去白銀獅子');
+      }
+      // 梟姬：失去裝備區的一張牌時摸兩張。
+      if (triggerLoss && player.alive && hasSkill(player, 'xiaogi')) {
+        drawCards(state, player, 2);
+        log(state, 'draw', `${generalOf(player).name} 的【梟姬】摸 2 張牌。`);
       }
       return card;
     }
@@ -342,10 +348,10 @@ function cloneRequest(request: Request): Request {
   if (request.kind === 'choosePlayers') {
     return { ...request, candidates: [...request.candidates] };
   }
-  if (request.kind === 'chooseRevealed') {
+  if (request.kind === 'chooseRevealed' || request.kind === 'chooseFrom') {
     return { ...request, cards: request.cards.map(snapshotCard) };
   }
-  return { ...request, cards: [...request.cards] };
+  return { ...request };
 }
 
 function snapshotCard(card: Card): Card {
@@ -383,7 +389,10 @@ export function viewFor(state: GameState, viewerId: PlayerId, godMode = false): 
         horsePlus: player.equips.horsePlus ? snapshotCard(player.equips.horsePlus) : null,
         horseMinus: player.equips.horseMinus ? snapshotCard(player.equips.horseMinus) : null,
       },
-      judgeZone: player.judgeZone.map(snapshotCard),
+      judgeZone: player.judgeZone.map((card) => ({
+        ...card,
+        name: state.delayedNames[card.id] ?? card.name,
+      })),
       chained: player.chained,
       wine: player.wine,
       slashUsed: player.slashUsed,

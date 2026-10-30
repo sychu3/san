@@ -170,6 +170,8 @@ export interface GameState {
   phase: Phase;
   turnCount: number;
   winner: Winner | null;
+  /** 判定區延時錦囊的「視為牌名」；轉化牌（如【國色】）需要靠這個對照。 */
+  delayedNames: Record<number, CardName>;
   log: LogEntry[];
   logSeq: number;
   requestSeq: number;
@@ -255,6 +257,14 @@ export type Request =
   | (RequestBase & {
       kind: 'chooseRevealed';
       cards: Card[];
+      reason: string;
+    })
+  | (RequestBase & {
+      /** 從指定的牌中選取（不限定手牌，例如【觀星】看牌堆頂）。 */
+      kind: 'chooseFrom';
+      cards: Card[];
+      min: number;
+      max: number;
       reason: string;
     });
 

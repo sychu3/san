@@ -21,6 +21,8 @@ function fresh(seed = 7): GameState {
   );
   state.discard = [];
   state.players.forEach((player, index) => {
+    // 固定成不影響牌局選項的武將，避免第二批技能改變選項數量。
+    player.generalId = 'zhang_fei';
     player.hand = [];
     player.hp = 5;
     player.maxHp = 5;

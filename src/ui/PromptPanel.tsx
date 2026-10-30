@@ -10,6 +10,7 @@ interface Props {
   selectedCards: number[];
   selectedPlayers: PlayerId[];
   onTogglePlayer: (id: PlayerId) => void;
+  onToggleCard: (id: number) => void;
   onRespond: (response: Response) => void;
 }
 
@@ -30,6 +31,7 @@ export function PromptPanel({
   selectedCards,
   selectedPlayers,
   onTogglePlayer,
+  onToggleCard,
   onRespond,
 }: Props) {
   const self = view.players[humanId];
@@ -174,6 +176,38 @@ export function PromptPanel({
                 </span>
               </button>
             ))}
+          </div>
+        </>
+      )}
+
+      {request.kind === 'chooseFrom' && (
+        <>
+          <p className="prompt__hint">
+            {request.prompt}（已選 {selectedCards.length}／{request.max} 張）
+          </p>
+          <div className="option-grid">
+            {request.cards.map((card) => (
+              <button
+                key={card.id}
+                type="button"
+                className={`option option--card ${selectedCards.includes(card.id) ? 'option--selected' : ''}`}
+                onClick={() => onToggleCard(card.id)}
+              >
+                <CardView card={card} compact />
+                <span>
+                  {cardLabel(card.name)} {suitSymbol(card.suit)}
+                  {rankLabel(card.rank)}
+                </span>
+              </button>
+            ))}
+            <button
+              type="button"
+              className="option option--confirm"
+              disabled={selectedCards.length < request.min || selectedCards.length > request.max}
+              onClick={() => onRespond({ type: 'cards', cards: selectedCards })}
+            >
+              確認選擇
+            </button>
           </div>
         </>
       )}

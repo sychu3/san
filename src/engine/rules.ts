@@ -37,6 +37,7 @@ export function distance(state: GameState, from: PlayerId, to: PlayerId): number
   let value = seatDistance(state, from, to);
   if (target.equips.horsePlus) value += 1;
   if (source.equips.horseMinus) value -= 1;
+  if (hasSkill(source, 'mashu')) value -= 1;
   return Math.max(1, value);
 }
 

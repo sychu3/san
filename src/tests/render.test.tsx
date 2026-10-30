@@ -73,6 +73,7 @@ describe('UI 渲染煙霧測試', () => {
         selectedCards={[]}
         selectedPlayers={[]}
         onTogglePlayer={() => undefined}
+        onToggleCard={() => undefined}
         onRespond={() => undefined}
       />,
     );

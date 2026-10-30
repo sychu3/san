@@ -40,8 +40,9 @@ export default function App() {
   const human = view.players[controller.humanId];
   const hand = human?.hand ?? [];
   const selectableCards = useMemo(() => {
-    if (pending?.kind !== 'chooseCards') return new Set<number>();
-    return new Set(pending.cards);
+    if (pending?.kind === 'chooseCards') return new Set(pending.cards);
+    if (pending?.kind === 'chooseFrom') return new Set(pending.cards.map((card) => card.id));
+    return new Set<number>();
   }, [pending]);
 
   const send = useCallback(
@@ -59,7 +60,9 @@ export default function App() {
   );
 
   const toggleCard = (id: number) => {
-    if (pending?.kind !== 'chooseCards' || !selectableCards.has(id)) return;
+    if ((pending?.kind !== 'chooseCards' && pending?.kind !== 'chooseFrom') || !selectableCards.has(id)) {
+      return;
+    }
     setSelectedCards((current) => {
       if (current.includes(id)) return current.filter((item) => item !== id);
       if (current.length >= pending.max) return current;
@@ -182,6 +185,7 @@ export default function App() {
               selectedCards={selectedCards}
               selectedPlayers={selectedPlayers}
               onTogglePlayer={togglePlayer}
+              onToggleCard={toggleCard}
               onRespond={send}
             />
           ) : (
@@ -228,7 +232,7 @@ export default function App() {
                 <li>延時錦囊：樂不思蜀、兵糧寸斷、閃電；判定前可使用【無懈可擊】。</li>
                 <li>裝備：11 把武器、八卦陣／仁王盾／藤甲／白銀獅子、各類 ±1 馬。</li>
                 <li>結算：距離、攻擊範圍、鐵索傳導、瀕死求桃、死亡獎懲、勝負判定。</li>
-                <li>首批 10 名武將技能：奸雄、護駕、仁德、激將、制衡、救援、武聖、咆哮、龍膽、集智、奇才、無雙、離間、閉月、急救、青囊。</li>
+                <li>標準 25 名武將技能全部啟用，第二批包含：反饋、鬼才、剛烈、突襲、裸衣、天妒、遺計、傾國、洛神、觀星、空城、鐵騎、馬術、奇襲、克己、苦肉、英姿、反間、國色、流離、謙遜、連營、結姻、梟姬。</li>
                 <li>需要選牌或選目標的技能（仁德、制衡、青囊、離間、龍膽、武聖等）會先按行動選項，再依提示選牌。</li>
               </ul>
               <h3>操作</h3>

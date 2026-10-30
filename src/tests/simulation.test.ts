@@ -59,8 +59,25 @@ describe('AI 對局模擬', () => {
     }
   });
 
-  it('AI 對局會實際發動首批武將技能', () => {
-    const tracked = ['奸雄', '制衡', '集智', '閉月', '離間', '青囊', '無雙'];
+  it('AI 對局會實際發動武將技能（兩批）', () => {
+    const tracked = [
+      '奸雄',
+      '制衡',
+      '集智',
+      '閉月',
+      '離間',
+      '青囊',
+      '無雙',
+      '洛神',
+      '突襲',
+      '觀星',
+      '克己',
+      '遺計',
+      '反饋',
+      '鐵騎',
+      '苦肉',
+      '反間',
+    ];
     const seen = new Set<string>();
     for (let seed = 1; seed <= 400; seed += 1) {
       const result = autoPlayGame({ seed, maxRequests: 800_000 });

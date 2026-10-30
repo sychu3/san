@@ -50,6 +50,9 @@ export function getGeneral(id: string): GeneralDef {
   return general;
 }
 
+/** 全部標準包武將 id（25 名）。 */
+export const ALL_GENERAL_IDS: readonly string[] = GENERALS.map((general) => general.id);
+
 /** M1 首批 10 名武將。 */
 export const MVP_GENERAL_IDS = [
   'cao_cao',
