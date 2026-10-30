@@ -355,7 +355,13 @@ function snapshotCard(card: Card): Card {
 export function viewFor(state: GameState, viewerId: PlayerId, godMode = false): GameView {
   const players: PlayerView[] = state.players.map((player) => {
     const general = generalOf(player);
-    const revealRole = godMode || player.id === viewerId || player.role === 'lord' || !player.alive;
+    // 對局結束後公開所有人的身份，方便復盤。
+    const revealRole =
+      godMode ||
+      state.winner !== null ||
+      player.id === viewerId ||
+      player.role === 'lord' ||
+      !player.alive;
     const isSelf = player.id === viewerId;
     return {
       id: player.id,

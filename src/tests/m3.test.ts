@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createGame } from '../engine/state';
+import { createGame, viewFor } from '../engine/state';
 import { getPlayOptions, runGame } from '../engine/engine';
 import { getGeneral } from '../data/generals';
 import type { Card, GameState, Request, Response, Role } from '../engine/types';
@@ -490,5 +490,12 @@ describe('M3 首批武將技能', () => {
     expect(state.players[1]!.hp).toBe(3);
     expect(state.players[0]!.marks.qingnang_used).toBe(true);
     expect(logged(state, '青囊')).toBe(true);
+  });
+
+  it('對局結束後公開所有玩家的身份', () => {
+    const state = createGame({ seed: 5 });
+    state.winner = { roles: ['lord'], reason: '測試' };
+    const view = viewFor(state, 0);
+    expect(view.players.every((player) => player.role !== null)).toBe(true);
   });
 });

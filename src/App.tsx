@@ -147,6 +147,19 @@ export default function App() {
                 <h2>{winnerText(view.winner)}</h2>
                 <p>{view.winner.reason}</p>
                 <p className="result__turns">共 {view.turnCount} 回合</p>
+                <ul className="result__roles">
+                  {view.players.map((player) => (
+                    <li key={player.id}>
+                      <span className={`seat__role ${player.role ? `seat__role--${player.role}` : ''}`}>
+                        {player.role ? ROLE_LABELS[player.role] : '身份未知'}
+                      </span>
+                      <span className="result__roles-name">
+                        {player.generalName}
+                        {player.alive ? '' : '（陣亡）'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
                 <div className="result__actions">
                   <button type="button" className="primary-btn" onClick={restart}>
                     再來一局

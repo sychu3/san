@@ -564,6 +564,32 @@ button {
   flex-wrap: wrap;
 }
 
+/* 其他玩家的座位較小，裝備／判定／技能也縮小，避免蓋住牌桌中央。 */
+.seat--compact .seat__equips .card,
+.seat--compact .seat__judge .card {
+  width: 34px;
+  height: 47px;
+  padding: 2px 3px;
+  border-radius: 4px;
+}
+
+.seat--compact .seat__equips .card__label,
+.seat--compact .seat__judge .card__label {
+  font-size: 8px;
+}
+
+.seat--compact .seat__equips .card__rank,
+.seat--compact .seat__judge .card__rank {
+  font-size: 9px;
+}
+
+.seat--compact .seat__equips .card__suit,
+.seat--compact .seat__judge .card__suit,
+.seat--compact .seat__equips .card__suit--large,
+.seat--compact .seat__judge .card__suit--large {
+  font-size: 9px;
+}
+
 /* ------------------------------------------------------------------ */
 /* Card                                                                */
 /* ------------------------------------------------------------------ */
@@ -998,6 +1024,26 @@ button.card:hover:not(:disabled) {
 .result__turns {
   color: var(--muted) !important;
   font-size: 11px !important;
+}
+
+.result__roles {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+  text-align: left;
+}
+
+.result__roles li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.result__roles-name {
+  color: var(--text, #e8e2d4);
 }
 
 .result__actions {

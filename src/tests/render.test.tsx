@@ -38,6 +38,18 @@ describe('UI 渲染煙霧測試', () => {
     expect(html).toContain('咆哮');
   });
 
+  it('其他玩家的 compact 座位也會顯示裝備與判定區', () => {
+    const state = createGame({ seed: 1 });
+    const view = viewFor(state, 0);
+    view.players[1]!.equips.weapon = { id: 9005, name: 'crossbow', suit: 'club', rank: 1 };
+    view.players[1]!.judgeZone.push({ id: 9006, name: 'lightning', suit: 'spade', rank: 1 });
+    const html = renderToString(
+      <Seat player={view.players[1]!} isTurn={false} isSelf={false} waiting={false} compact />,
+    );
+    expect(html).toContain('諸葛連弩');
+    expect(html).toContain('閃電');
+  });
+
   it('PromptPanel 會顯示五穀豐登的翻開牌選項', () => {
     const state = createGame({ seed: 1 });
     const view = viewFor(state, 0);

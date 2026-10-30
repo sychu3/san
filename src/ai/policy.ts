@@ -34,8 +34,9 @@ function roleEnemyScore(view: GameView, self: PlayerView, target: PlayerView): n
   }
   if (self.role === 'spy') {
     const alive = view.players.filter((player) => player.alive).length;
-    if (target.role === 'lord') return alive <= 2 ? 120 : 10;
-    return 35;
+    // 只要還有其他人，殺主公等於讓反賊獲勝；先清除其他人，最後才單挑主公。
+    if (target.role === 'lord') return alive <= 2 ? 120 : -40;
+    return 45;
   }
   // 主公：其他人都可能是反賊或內奸。
   return target.role === 'loyal' ? -30 : 45;
@@ -214,7 +215,16 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       }
       if (name === 'iron_chain') {
         if (option.skill === 'recast') score += self.handCount <= 2 ? 25 : 8;
-        else score += 12;
+        else {
+          // 連結敵人是好事（之後屬性傷害會傳導），連結自己或隊友則有害。
+          for (const id of option.targets) {
+            const player = view.players[id];
+            if (!player) continue;
+            const enemy = roleEnemyScore(view, self, player);
+            if (enemy > 0) score += player.chained ? -6 : 16;
+            else score -= 25;
+          }
+        }
       }
       if (name === 'slash' || name === 'fire_slash' || name === 'thunder_slash') {
         if (target) {

@@ -158,6 +158,88 @@ describe('AI 拆牌判斷', () => {
     expect(countPlays(view, request)).toBeGreaterThan(0);
   });
 
+  function actionRequest(player: number, options: PlayOption[]): Request {
+    return {
+      id: 20,
+      player,
+      prompt: '出牌階段：請選擇行動',
+      kind: 'action',
+      options,
+      context: '出牌階段',
+    };
+  }
+
+  it('不會用鐵索連環連結自己，會連結敵人', () => {
+    const state = fresh();
+    state.players[0]!.hand = [card(9200, 'iron_chain', 'club', 10)];
+
+    const selfOption: PlayOption = {
+      id: 'chain:self',
+      label: '鐵索連環 → 自己',
+      kind: 'play',
+      cards: [9200],
+      targets: [0],
+      asCard: 'iron_chain',
+    };
+    const enemyOption: PlayOption = {
+      id: 'chain:enemy',
+      label: '鐵索連環 → 劉備',
+      kind: 'play',
+      cards: [9200],
+      targets: [1],
+      asCard: 'iron_chain',
+    };
+    const pass: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+
+    const selfRequest = actionRequest(0, [selfOption, pass]);
+    state.pending = selfRequest;
+    let selfView = viewFor(state, 0);
+    for (let rngState = 1; rngState <= 40; rngState += 1) {
+      expect(decide(selfView, selfRequest, { rngState })).toEqual({ type: 'option', optionId: 'pass' });
+    }
+
+    const enemyRequest = actionRequest(0, [enemyOption, pass]);
+    state.pending = enemyRequest;
+    selfView = viewFor(state, 0);
+    expect(decide(selfView, enemyRequest, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'chain:enemy',
+    });
+  });
+
+  it('內奸在還有其他人時不會攻擊主公，先打其他角色', () => {
+    const state = fresh();
+    state.players[0]!.role = 'spy';
+    state.players[0]!.hand = [card(9300, 'slash', 'spade', 7)];
+
+    const lordOption: PlayOption = {
+      id: 'slash:lord',
+      label: '殺 → 劉備',
+      kind: 'play',
+      cards: [9300],
+      targets: [1],
+      asCard: 'slash',
+    };
+    const otherOption: PlayOption = {
+      id: 'slash:other',
+      label: '殺 → 忠臣',
+      kind: 'play',
+      cards: [9300],
+      targets: [2],
+      asCard: 'slash',
+    };
+    const pass: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+
+    const request = actionRequest(0, [lordOption, otherOption, pass]);
+    state.pending = request;
+    const view = viewFor(state, 0);
+
+    expect(decide(view, request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'slash:other',
+    });
+  });
+
   it('敵人只剩判定區延時錦囊時，放棄使用過河拆橋', () => {
     const state = fresh();
     state.players[0]!.hand = [card(9100, 'dismantle', 'club', 3)];
