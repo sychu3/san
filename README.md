@@ -76,6 +76,39 @@ npm run build
 
 把 `dist/` 上傳到任何靜態主機即可（Netlify、Cloudflare Pages、Vercel、GitHub Pages）。`dist/_headers` 與 `vercel.json` 已包含安全標頭；若主機不支援，請在該主機另外設定，詳見 [SECURITY.md](./SECURITY.md)。
 
+產出約 330 KB（JS 約 296 KB、CSS 約 20 KB），任何免費靜態方案都放得下。
+
+#### tiiny.site（免設定的 Drag & Drop 靜態主機）
+
+公開試玩最快的方式：只要上傳一個 ZIP，**ZIP 最上層必須是 `index.html`**（不能多一層 `dist/`）。
+
+```bash
+npm run build
+cd dist
+zip -r ../sanguosha-tiiny.zip . -x '.*' -x '*/.*'
+cd ..
+unzip -l sanguosha-tiiny.zip | head   # 應看到 index.html 與 assets/…
+```
+
+到 <https://tiiny.site> 把 `sanguosha-tiiny.zip` 拖進上傳框，填一個 link name（例如 `sanguosha-junzheng`），發佈後網址就是 `https://sanguosha-junzheng.tiiny.site`。更新版本時重新 build、重新 zip，上傳**同一個 link name** 即可覆蓋，網址不變。
+
+有 API key（Tiiny Host 帳號 dashboard 取得）時可以腳本化：
+
+```bash
+export TIINY_API_KEY=你的key
+curl -X POST https://ext.tiiny.host/v1/upload \
+  -H "x-api-key: $TIINY_API_KEY" \
+  -F "files=@sanguosha-tiiny.zip" \
+  -F "domain=sanguosha-junzheng.tiiny.site"
+```
+
+tiiny.site 的限制與差異（詳見 [SECURITY.md](./SECURITY.md) 3.6）：
+
+- 免費方案：1 個站台、每站 3 MB、每天 3 次上傳，頁面附一個小橫幅。本專案約 330 KB，空間充裕。
+- **不套用 `dist/_headers` 與 `vercel.json`**，生效的只有 `dist/index.html` 內的 CSP meta。只能靠 HTTP 標頭的項目（HSTS、`X-Content-Type-Options`、`frame-ancestors`）在免費方案無法設定。
+- 本作是單頁遊戲、沒有前端路由，不需要 SPA rewrite／fallback 規則。
+- `localStorage` 存檔綁定網域，本機 `127.0.0.1:4173` 的存檔不會帶到新網址。
+
 ### 第一次試玩怎麼做
 
 1. 你是畫面下方標示「你」的角色；其他四席由 AI 操作。
@@ -102,6 +135,8 @@ npm run build
 | 5173 連接埠被占用 | `npm run dev -- --port 5174` |
 | 畫面空白 | 打開瀏覽器 DevTools console 查看錯誤；先跑 `npm run build` 確認 TypeScript 無誤 |
 | 想從另一台電腦連線 | `npm run dev -- --host 0.0.0.0`，但 dev server 沒有驗證，只可在可信任的內網使用；公開展示請用 build 後的靜態主機 |
+| tiiny.site 顯示「preview」並在一小時後消失 | 代表 ZIP 超過免費方案 3 MB 上限（或含不支援的內容）；本專案約 330 KB，通常是誤打包了 `node_modules`／多一層資料夾 |
+| tiiny.site 開啟後畫面空白 | 確認 ZIP 最上層是 `index.html` 而不是 `dist/index.html`；用 `unzip -l` 檢查 |
 | 看不到其他玩家的手牌 | 這是正常的，隱藏資訊由 `viewFor()` 遮蔽；只有「上帝視角」會顯示 |
 
 ## 常見規則疑問
@@ -169,7 +204,7 @@ public/
 - 全牌池 AI 1,000 局模擬作為測試關卡，確認新牌不會造成崩潰或死循環。
 - 精確鎖定依賴版本、提交 `package-lock.json`、`npm audit` 0 漏洞；不使用 CDN 或遠端字型。
 - `.npmrc` 啟用 `ignore-scripts`，安裝依賴時不執行套件安裝腳本。
-- 不收集資料、不使用 cookie／localStorage／分析腳本。
+- 不收集資料、不使用 cookie、不上傳任何內容；`localStorage` 只用來存本機存檔與顯示設定，且 `connect-src 'none'` 確保執行期不會發出任何網路請求。
 
 完整威脅模型與部署標頭請見 [SECURITY.md](./SECURITY.md)。
 

@@ -317,7 +317,7 @@
 | 狀態 | 自製 `GameController` + React state |
 | 樣式 | Plain CSS + CSS 變數 |
 | 測試 | Vitest；Playwright 為外部 E2E 工具 |
-| 部署 | 靜態託管（Vercel／Netlify／GitHub Pages） |
+| 部署 | 靜態託管（Vercel／Netlify／GitHub Pages；快速試玩可用 tiiny.site 上傳 ZIP） |
 
 ### 4.2 分層
 
@@ -965,7 +965,7 @@ targetValue(j) = P(enemy) × threat(j) − P(ally) × allyValue(j)
 - 平衡調整：依 10,000 局模擬與人工試玩調整 AI 與卡牌權重。
 - 字體與視覺：確認繁體中文字型在不同系統的 fallback；不載入遠端字體。
 - 無障礙與效能：Lighthouse／axe 檢查、首次載入 < 2 秒（一般寬頻）。
-- 部署：確認 `dist/_headers` 或 `vercel.json` 生效，response headers 含 CSP、`X-Frame-Options`、`nosniff`。
+- 部署：確認 `dist/_headers` 或 `vercel.json` 生效，response headers 含 CSP、`X-Frame-Options`、`nosniff`；不支援自訂標頭的主機（如 tiiny.site）只靠 CSP meta，差異記錄於 `SECURITY.md` 3.6。
 - 文件：更新 README 的試玩步驟、RULES 的完整規則、SECURITY 的檢查清單。
 - 版本標記與變更紀錄；標明非官方、非商業。
 
