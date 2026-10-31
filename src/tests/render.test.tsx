@@ -3,6 +3,8 @@ import { renderToString } from 'react-dom/server';
 import App from '../App';
 import { Seat } from '../ui/Seat';
 import { PromptPanel } from '../ui/PromptPanel';
+import { LogPanel } from '../ui/LogPanel';
+import { CardView } from '../ui/CardView';
 import { createGame, viewFor } from '../engine/state';
 import type { Card, Request } from '../engine/types';
 
@@ -15,6 +17,22 @@ describe('UI 渲染煙霧測試', () => {
     expect(html).toContain('設定');
     expect(html).toContain('存檔');
     expect(html).not.toContain('dangerouslySetInnerHTML');
+  });
+
+  it('LogPanel 會把回合分隔列標成醒目樣式', () => {
+    const entries = [
+      { seq: 1, kind: 'phase' as const, text: '── 曹操 的回合 ──' },
+      { seq: 2, kind: 'play' as const, text: '曹操 使用【殺】→ 劉備。' },
+    ];
+    const html = renderToString(<LogPanel entries={entries} />);
+    expect(html).toContain('log__line--turn');
+    expect(html).toContain('曹操 的回合');
+  });
+
+  it('CardView 的提示包含卡牌說明與坐騎標示', () => {
+    const html = renderToString(<CardView card={{ id: 1, name: 'jueying', suit: 'spade', rank: 5 }} />);
+    expect(html).toContain('+1');
+    expect(html).toContain('距離');
   });
 
   it('Seat 受到傷害時會加上閃動 class', () => {

@@ -34,7 +34,7 @@ const ROLE_GOAL: Record<string, string> = {
 };
 
 export default function App() {
-  const [controller, setController] = useState(() => new GameController());
+  const [controller, setController] = useState(() => new GameController({ stepMode: true }));
   const [liveView, setLiveView] = useState(() => controller.getView());
   const [selectedCards, setSelectedCards] = useState<number[]>([]);
   const [selectedPlayers, setSelectedPlayers] = useState<PlayerId[]>([]);
@@ -62,6 +62,7 @@ export default function App() {
   const view = replay ? replay.views[Math.min(replayIndex, replay.views.length - 1)]! : liveView;
   const pending = view.pending;
   const pendingId = pending?.id ?? null;
+  const stepInfo = replay ? null : controller.getWaitingStepInfo();
 
   // 音效：依新出現的日誌種類播放合成音。
   useEffect(() => {
@@ -169,7 +170,11 @@ export default function App() {
   };
 
   const restart = () => {
-    const next = new GameController({ seed: randomSeed(), difficulty: controller.getDifficulty() });
+    const next = new GameController({
+      seed: randomSeed(),
+      difficulty: controller.getDifficulty(),
+      stepMode: controller.isStepMode(),
+    });
     setController(next);
     setLiveView(next.getView());
     setSelectedCards([]);
@@ -249,6 +254,14 @@ export default function App() {
             }}
           >
             AI：{DIFFICULTY_LABELS[controller.getDifficulty()] ?? controller.getDifficulty()}
+          </button>
+          <button
+            type="button"
+            className={`ghost-btn ${controller.isStepMode() ? 'ghost-btn--on' : ''}`}
+            onClick={() => controller.setStepMode(!controller.isStepMode())}
+            title="逐步模式：每個 AI 行動前停下來，等你確認"
+          >
+            逐步：{controller.isStepMode() ? '開' : '關'}
           </button>
           <button
             type="button"
@@ -394,7 +407,18 @@ export default function App() {
               <div className="panel__title">重播</div>
               <p className="prompt__hint">重播模式：使用上方控制列前進／後退，不會影響實際對局。</p>
             </section>
-          ) : pending ? (
+          ) : stepInfo ? (
+            <section className="panel prompt">
+              <div className="panel__title">等待確認</div>
+              <p className="prompt__hint">
+                輪到 {view.players[stepInfo.player]?.generalName ?? `玩家${stepInfo.player + 1}`} 行動
+              </p>
+              <p className="prompt__small">{stepInfo.prompt}</p>
+              <button type="button" className="primary-btn" onClick={() => controller.resumeStep()}>
+                繼續（讓 AI 行動）
+              </button>
+            </section>
+          ) : pending && pending.player === controller.humanId ? (
             <PromptPanel
               view={view}
               request={pending}
@@ -418,7 +442,7 @@ export default function App() {
             </div>
           )}
 
-          <LogPanel entries={view.log} />
+          <LogPanel entries={view.log} players={view.players} />
         </aside>
       </main>
 

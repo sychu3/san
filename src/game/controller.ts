@@ -34,9 +34,17 @@ export class GameController {
   private difficulty: Difficulty;
   private readonly aiMemory = new Map<PlayerId, AiMemory>();
   private readonly responses: SavedResponse[] = [];
+  private stepMode: boolean;
+  private pausedRequest: Request | null = null;
 
   constructor(
-    options: CreateGameOptions & { humanId?: PlayerId; godMode?: boolean; difficulty?: Difficulty } = {},
+    options: CreateGameOptions & {
+      humanId?: PlayerId;
+      godMode?: boolean;
+      difficulty?: Difficulty;
+      /** 逐步模式：AI 每次出牌前暫停，等玩家確認。 */
+      stepMode?: boolean;
+    } = {},
   ) {
     this.state = createGame(options);
     this.humanId = options.humanId ?? 0;
@@ -45,6 +53,7 @@ export class GameController {
     }
     this.godMode = options.godMode ?? false;
     this.difficulty = options.difficulty ?? 'normal';
+    this.stepMode = options.stepMode ?? false;
     this.aiRng = { rngState: (this.state.seed ^ AI_RNG_XOR) >>> 0 || 1 };
     this.generator = runGame(this.state);
     this.snapshot = this.makeView();
@@ -65,6 +74,58 @@ export class GameController {
 
   getDifficulty(): Difficulty {
     return this.difficulty;
+  }
+
+  isStepMode(): boolean {
+    return this.stepMode;
+  }
+
+  setStepMode(enabled: boolean): void {
+    if (this.stepMode === enabled) return;
+    this.stepMode = enabled;
+    if (!enabled && this.pausedRequest) {
+      this.resumeStep();
+      return;
+    }
+    this.emit();
+  }
+
+  /** 是否正停在 AI 行動前，等待玩家按「繼續」。 */
+  isWaitingStep(): boolean {
+    return this.pausedRequest !== null;
+  }
+
+  /**
+   * 等待確認時的公開資訊（誰要行動、要做什麼）。
+   * 只回傳提示文字，不含該 AI 的手牌或選項內容。
+   */
+  getWaitingStepInfo(): { player: PlayerId; prompt: string } | null {
+    if (!this.pausedRequest) return null;
+    return { player: this.pausedRequest.player, prompt: this.pausedRequest.prompt };
+  }
+
+  /** 繼續逐步模式：讓目前等待中的 AI 進行一次行動。 */
+  resumeStep(): void {
+    const request = this.pausedRequest;
+    if (!request) return;
+    this.pausedRequest = null;
+    const next = this.generator.next(this.aiResponseFor(request));
+    this.pump(next);
+  }
+
+  private aiResponseFor(request: Request): Response {
+    try {
+      return decide(
+        viewFor(this.state, request.player),
+        request,
+        this.aiRng,
+        this.memoryFor(request.player),
+        this.difficulty,
+      );
+    } catch {
+      // AI 不應讓整局崩潰；遇到非預期狀態時採保守合法回應。
+      return fallbackResponse(request);
+    }
   }
 
   setDifficulty(difficulty: Difficulty): void {
@@ -126,20 +187,23 @@ export class GameController {
   }
 
   private start(): void {
-    this.advance(undefined);
+    this.pump(this.generator.next());
   }
 
   private advance(response: Response | undefined): void {
-    const step = response === undefined ? this.generator.next() : this.generator.next(response);
-    if (step.done) {
-      this.result = step.value;
+    this.pump(response === undefined ? this.generator.next() : this.generator.next(response));
+  }
+
+  /** 由 AI 接手，直到需要人類操作、逐步模式暫停，或遊戲結束。 */
+  private pump(initial: IteratorResult<Request, GameResult>): void {
+    if (initial.done) {
+      this.result = initial.value;
       this.snapshot = this.makeView();
       this.emit();
       return;
     }
 
-    // 由 AI 接手，直到需要人類操作或遊戲結束。
-    let request: Request | undefined = step.value;
+    let request: Request | undefined = initial.value;
     while (request) {
       if (request.player === this.humanId) {
         this.lastHumanRequestId = request.id;
@@ -148,15 +212,15 @@ export class GameController {
         return;
       }
 
-      const aiView = viewFor(this.state, request.player);
-      let aiResponse: Response;
-      try {
-        aiResponse = decide(aiView, request, this.aiRng, this.memoryFor(request.player), this.difficulty);
-      } catch {
-        // AI 不應讓整局崩潰；遇到非預期狀態時採保守合法回應。
-        aiResponse = fallbackResponse(request);
+      // 逐步模式：AI 每次選擇行動前暫停。
+      if (this.stepMode && request.kind === 'action') {
+        this.pausedRequest = request;
+        this.snapshot = this.makeView();
+        this.emit();
+        return;
       }
-      const next = this.generator.next(aiResponse);
+
+      const next = this.generator.next(this.aiResponseFor(request));
       if (next.done) {
         this.result = next.value;
         this.snapshot = this.makeView();

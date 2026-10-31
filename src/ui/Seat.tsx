@@ -48,7 +48,20 @@ export function Seat({ player, isTurn, isSelf, waiting, compact = false, hit = f
     >
       <div className="seat__head">
         <span className="seat__kingdom">{KINGDOM_LABELS[player.kingdom] ?? player.kingdom}</span>
-        <span className="seat__name">{player.generalName}</span>
+        <span
+          className="seat__name"
+          title={`${player.generalName}（${KINGDOM_LABELS[player.kingdom] ?? player.kingdom}／${
+            player.gender === 'male' ? '男' : '女'
+          }）${
+            player.skills.length > 0
+              ? `\n技能：${player.skills
+                  .map((id) => `${SKILL_META[id]?.name ?? id}－${SKILL_META[id]?.description ?? ''}`)
+                  .join('\n')}`
+              : ''
+          }`}
+        >
+          {player.generalName}
+        </span>
         {isSelf && <span className="seat__you">你</span>}
         {player.role === 'lord' && <span className="seat__lord">主公</span>}
       </div>
@@ -70,7 +83,11 @@ export function Seat({ player, isTurn, isSelf, waiting, compact = false, hit = f
       {player.skills.length > 0 && (
         <div className="seat__skills" title="武將技能">
           {player.skills.map((id) => (
-            <span key={id} className="tag tag--skill">
+            <span
+              key={id}
+              className="tag tag--skill"
+              title={`${SKILL_META[id]?.name ?? id}：${SKILL_META[id]?.description ?? ''}`}
+            >
               {SKILL_META[id]?.name ?? id}
             </span>
           ))}

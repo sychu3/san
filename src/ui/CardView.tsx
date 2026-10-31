@@ -1,5 +1,5 @@
 import type { Card } from '../engine/types';
-import { cardLabel } from '../data/cardMeta';
+import { cardDescription, cardLabel } from '../data/cardMeta';
 import { rankLabel, suitSymbol } from '../engine/engine';
 
 interface Props {
@@ -30,6 +30,8 @@ export function CardView({ card, selected = false, disabled = false, compact = f
     .filter(Boolean)
     .join(' ');
 
+  const tip = title ?? `${cardLabel(card.name)}：${cardDescription(card.name)}`;
+
   const content = (
     <>
       <span className="card__corner">
@@ -43,7 +45,7 @@ export function CardView({ card, selected = false, disabled = false, compact = f
 
   if (!onClick) {
     return (
-      <span className={className} title={title ?? cardLabel(card.name)}>
+      <span className={className} title={tip}>
         {content}
       </span>
     );
@@ -55,7 +57,7 @@ export function CardView({ card, selected = false, disabled = false, compact = f
       className={className}
       onClick={onClick}
       disabled={disabled}
-      title={title ?? cardLabel(card.name)}
+      title={tip}
       aria-pressed={selected}
     >
       {content}
