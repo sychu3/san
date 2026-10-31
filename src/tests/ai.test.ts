@@ -207,6 +207,46 @@ describe('AI 拆牌判斷', () => {
     });
   });
 
+  it('結姻不會幫敵人回體力，只在自己或隊友受傷時使用', () => {
+    const state = fresh();
+    state.players[0]!.generalId = 'sun_shangxiang';
+    state.players[0]!.hand = [card(9500, 'peach', 'heart', 3), card(9501, 'dodge', 'diamond', 2)];
+    state.players[0]!.hand.length = 2;
+    // 自己滿血、目標是敵人：不應發動。
+    const toEnemy: PlayOption = {
+      id: 'jieyin:enemy',
+      label: '結姻 → 劉備',
+      kind: 'play',
+      cards: [],
+      targets: [1],
+      skill: 'jieyin',
+    };
+    const pass: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+    const request = actionRequest(0, [toEnemy, pass]);
+    state.pending = request;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    // 自己受傷時，可對自己使用。
+    state.players[0]!.hp = state.players[0]!.maxHp - 1;
+    const toSelf: PlayOption = {
+      id: 'jieyin:self',
+      label: '結姻 → 自己',
+      kind: 'play',
+      cards: [],
+      targets: [0],
+      skill: 'jieyin',
+    };
+    const request2 = actionRequest(0, [toSelf, pass]);
+    state.pending = request2;
+    expect(decide(viewFor(state, 0), request2, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'jieyin:self',
+    });
+  });
+
   it('反賊可推斷剩餘非主公角色是隊友（例如主公諸葛亮空城時不決鬥隊友）', () => {
     const state = fresh();
     state.players.forEach((item, index) => {

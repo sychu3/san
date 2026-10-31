@@ -414,7 +414,16 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       } else if (option.skill === 'fanjian') {
         score += firstEnemy > 0 ? 40 : -30;
       } else if (option.skill === 'jieyin') {
-        score += self.hp < self.maxHp ? 35 : -10;
+        // 結姻會同時回復自己與目標；幫敵人回體力是嚴重錯誤。
+        if (firstEnemy > 0 && first && first.id !== self.id) {
+          score -= 50;
+        } else {
+          let value = self.hp < self.maxHp ? 25 : 0;
+          if (first && first.id !== self.id && first.hp < first.maxHp) value += 30;
+          // 代價：棄兩張手牌。
+          value -= self.handCount <= 2 ? 22 : 6;
+          score += value > 0 ? value : -18;
+        }
       }
     }
 
