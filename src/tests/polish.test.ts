@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { GameController } from '../game/controller';
 import { CARD_DESCRIPTIONS, CARD_NAMES, cardDescription, cardLabel } from '../data/cardMeta';
 import type { Request, Response } from '../engine/types';
@@ -85,5 +87,39 @@ describe('UX 改善：卡牌與坐騎提示', () => {
       expect(cardDescription(name).length).toBeGreaterThan(0);
       expect(CARD_DESCRIPTIONS[name]).toBeDefined();
     }
+  });
+});
+
+describe('手機直向版面：自己武將在下方並緊鄰行動按鈕', () => {
+  const css = readFileSync(resolve(import.meta.dirname, '..', 'styles.css'), 'utf8');
+
+  function portraitBlock(): string {
+    const start = css.indexOf('and (orientation: portrait)');
+    expect(start).toBeGreaterThan(-1);
+    const end = css.indexOf('/* ---', start);
+    return css.slice(start, end === -1 ? undefined : end);
+  }
+
+  it('手機直向會讓牌桌改為單欄堆疊', () => {
+    const block = portraitBlock();
+    expect(block).toContain('display: contents');
+    expect(block).toContain('flex-direction: column');
+    expect(block).toContain('.hand');
+  });
+
+  it('自己的武將排在最後、手牌次之，順序在其他角色之後', () => {
+    const block = portraitBlock();
+    const self = block.match(/\.table__seat--self\s*\{[^}]*order:\s*(\d+)/);
+    const hand = block.match(/\.hand\s*\{[^}]*order:\s*(\d+)/);
+    const seat = block.match(/\.table__seat\s*\{[^}]*order:\s*(\d+)/);
+    expect(self).not.toBeNull();
+    expect(hand).not.toBeNull();
+    expect(seat).not.toBeNull();
+    const selfOrder = Number(self![1]);
+    const handOrder = Number(hand![1]);
+    const seatOrder = Number(seat![1]);
+    // 其他角色 → 手牌 → 自己武將（自己武將最底，下方就是行動按鈕）。
+    expect(seatOrder).toBeLessThan(handOrder);
+    expect(handOrder).toBeLessThan(selfOrder);
   });
 });

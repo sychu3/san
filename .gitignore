@@ -6,3 +6,5 @@ coverage/
 .env
 .env.*
 !.env.example
+# 部署打包產物（例如拖放上傳用的 zip）
+*.zip

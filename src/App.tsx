@@ -237,7 +237,7 @@ export default function App() {
         <div className="topbar__brand">
           <h1>三國殺</h1>
           <span className="topbar__subtitle">軍爭篇・五人身份局</span>
-          <span className="topbar__unofficial">非官方同人實作</span>
+          <span className="topbar__unofficial">非官方・非商業同人實作</span>
         </div>
         <div className="topbar__actions">
           <span className="topbar__seed" title="本局隨機種子">
@@ -445,6 +445,15 @@ export default function App() {
           <LogPanel entries={view.log} players={view.players} />
         </aside>
       </main>
+
+      <footer className="footer">
+        <p className="footer__line">
+          非官方、非商業的規則學習用粉絲作品；不使用官方卡圖、Logo 或商標，三國殺及相關權利屬於其權利人。
+        </p>
+        <p className="footer__line">
+          對局完全在你的瀏覽器內執行：不連線伺服器、不上傳任何內容、不使用 cookie 或分析腳本；存檔只留在本機。
+        </p>
+      </footer>
 
       {showHelp && (
         <div className="modal" role="dialog" aria-modal="true" aria-label="規則說明" onClick={() => setShowHelp(false)}>

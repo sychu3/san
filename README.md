@@ -21,7 +21,7 @@
 - ✅ **AI 3 難度（新手／進階／高手）與身份推理**：只依公開事件更新「疑似反賊」信念，高手會用手牌推測；介面右上角可切換。
 - ✅ **存檔與重播**：只存 seed、難度與人類回應到 `localStorage`；讀檔可播放／暫停／單步／跳到最後。損壞或版本不相容會拒絕載入。
 - ✅ **設定與音效**：合成音效（預設關閉）、動畫速度（完整／快速／關閉）；設定只存本機。
-- ✅ **UX 與無障礙**：受傷閃動、瀕死提示、鍵盤焦點、Esc 關閉彈窗、`prefers-reduced-motion`、手機直向堆疊版面。
+- ✅ **UX 與無障礙**：受傷閃動、瀕死提示、鍵盤焦點、Esc 關閉彈窗、`prefers-reduced-motion`、手機直向堆疊版面（其他角色在上，自己的武將與行動按鈕相鄰放在最下方）。
 - ✅ **逐步模式**：每個 AI 行動前暫停並顯示「繼續」，方便看清 AI 做了什麼；可隨時開關。
 - ✅ **日誌分段與滑鼠提示**：每個角色回合有分隔線、行動列依勢力上色；卡牌與技能滑過顯示效果說明，坐騎標示 `(+1)`／`(-1)`。
 - ⏳ 尚無線上多人。
@@ -78,51 +78,59 @@ npm run build
 
 產出約 330 KB（JS 約 296 KB、CSS 約 20 KB），任何免費靜態方案都放得下。
 
-#### tiiny.site（免設定的 Drag & Drop 靜態主機）
+#### Cloudflare Pages（建議的公開部署方式）
 
-公開試玩最快的方式：只要上傳一個 ZIP，**ZIP 最上層必須是 `index.html`**（不能多一層 `dist/`）。
+免費方案不限流量／請求數，且**完整支援 `dist/_headers`**，`public/_headers` 裡的 CSP（含 `frame-ancestors 'none'`）、`X-Frame-Options`、`nosniff` 都會生效。
+
+**Dashboard 上傳（不用安裝任何工具）**
 
 ```bash
 npm run build
-cd dist
-zip -r ../sanguosha-tiiny.zip . -x '.*' -x '*/.*'
-cd ..
-unzip -l sanguosha-tiiny.zip | head   # 應看到 index.html 與 assets/…
 ```
 
-到 <https://tiiny.site> 把 `sanguosha-tiiny.zip` 拖進上傳框，填一個 link name（例如 `sanguosha-junzheng`），發佈後網址就是 `https://sanguosha-junzheng.tiiny.site`。更新版本時重新 build、重新 zip，上傳**同一個 link name** 即可覆蓋，網址不變。
+到 <https://dash.cloudflare.com> 註冊免費帳號（不用信用卡）→ Workers & Pages → Create → Pages → **Upload assets** → 專案名稱例如 `sanguosha` → 把 `dist/` 整個資料夾拖上去 → Deploy。完成後網址是 `https://sanguosha.pages.dev`；改版時再拖一次新的 `dist/` 即可。
 
-有 API key（Tiiny Host 帳號 dashboard 取得）時可以腳本化：
+**CLI（可重複部署）**
 
 ```bash
-export TIINY_API_KEY=你的key
-curl -X POST https://ext.tiiny.host/v1/upload \
-  -H "x-api-key: $TIINY_API_KEY" \
-  -F "files=@sanguosha-tiiny.zip" \
-  -F "domain=sanguosha-junzheng.tiiny.site"
+npm run build
+npx wrangler@4 pages deploy dist --project-name sanguosha
 ```
 
-tiiny.site 的限制與差異（詳見 [SECURITY.md](./SECURITY.md) 3.6）：
+第一次會開啟瀏覽器請你授權，憑證存在本機 `~/.wrangler`。`wrangler` 以 `npx` 一次性執行，不會寫進專案依賴或 lockfile。
 
-- 免費方案：1 個站台、每站 3 MB、每天 3 次上傳，頁面附一個小橫幅。本專案約 330 KB，空間充裕。
-- **不套用 `dist/_headers` 與 `vercel.json`**，生效的只有 `dist/index.html` 內的 CSP meta。只能靠 HTTP 標頭的項目（HSTS、`X-Content-Type-Options`、`frame-ancestors`）在免費方案無法設定。
-- 本作是單頁遊戲、沒有前端路由，不需要 SPA rewrite／fallback 規則。
-- `localStorage` 存檔綁定網域，本機 `127.0.0.1:4173` 的存檔不會帶到新網址。
+**部署後驗證**
+
+```bash
+curl -sI https://sanguosha.pages.dev/ | grep -iE "content-security|x-frame|nosniff|referrer"
+```
+
+應看到 `_headers` 的完整內容；之後開遊戲確認 console 沒有 CSP violation。
+
+#### 其他主機
+
+- **Netlify／Vercel**：支援自訂標頭（`_headers`／`vercel.json`），免費方案足夠，`vercel.json` 已備好。
+- **Surge／GitHub Pages**：可以上線，但**不支援自訂 HTTP 標頭**，只剩 `index.html` 內的 CSP meta，少了 `frame-ancestors` 與 `nosniff`。
+- **tiiny.site 等免費拖放主機**：平台會做內容政策審查（卡片遊戲常被誤判），實測上傳被拒；不建議使用。
+
+差異與取捨詳見 [SECURITY.md](./SECURITY.md) 3.6。
 
 ### 第一次試玩怎麼做
 
 1. 你是畫面下方標示「你」的角色；其他四席由 AI 操作。
 2. 不熟悉規則時，先按右上角「規則」查看摘要。預設為「逐步」模式：每次 AI 行動前會暫停，按右側「繼續」讓 AI 行動；想連續看可按右上角「逐步」關閉。
 3. 把滑鼠移到卡牌、裝備、判定牌或武將技能上，會顯示效果說明；坐騎名稱有 `(+1)`／`(-1)`。
-3. 出牌階段，右側「行動」會列出所有合法選項。每個選項已包含目標，直接按下去即可。
-4. 使用【鐵索連環】、【貫石斧】等需要選牌的牌時，先按行動選項，再從下方手牌點選指定張數，最後按「確認選擇」。武將技能（仁德、制衡、青囊、離間）也使用同一種流程。
-5. 進入棄牌階段時，點擊下方手牌選取，再按「確認選擇」。被選中的牌會浮起並顯示勾號。
-6. 別人對你使用【殺】時，右側會詢問是否打出【閃】；沒有【閃】就按「不出」。
-7. 錦囊結算前，若你有【無懈可擊】，右側會詢問是否抵消；也可以連環抵消別人的無懈可擊。
-8. 角色旁邊的「判定」區會顯示樂不思蜀、兵糧寸斷、閃電等延時錦囊。
-9. 你瀕死時，可以用【桃】或【酒】自救；其他角色也可能救你。
-10. 想重來按右上角「新局」。畫面會顯示本局 `seed`，相同 seed 可重現同一局。
-11. 「上帝視角」只供除錯，會顯示所有身份與手牌，不影響 AI 判斷。
+4. 出牌階段，右側「行動」會列出所有合法選項。每個選項已包含目標，直接按下去即可。
+5. 使用【鐵索連環】、【貫石斧】等需要選牌的牌時，先按行動選項，再從下方手牌點選指定張數，最後按「確認選擇」。武將技能（仁德、制衡、青囊、離間）也使用同一種流程。
+6. 進入棄牌階段時，點擊下方手牌選取，再按「確認選擇」。被選中的牌會浮起並顯示勾號。
+7. 別人對你使用【殺】時，右側會詢問是否打出【閃】；沒有【閃】就按「不出」。
+8. 錦囊結算前，若你有【無懈可擊】，右側會詢問是否抵消；也可以連環抵消別人的無懈可擊。
+9. 角色旁邊的「判定」區會顯示樂不思蜀、兵糧寸斷、閃電等延時錦囊。
+10. 你瀕死時，可以用【桃】或【酒】自救；其他角色也可能救你。
+11. 想重來按右上角「新局」。畫面會顯示本局 `seed`，相同 seed 可重現同一局。
+12. 「上帝視角」只供除錯，會顯示所有身份與手牌，不影響 AI 判斷。
+
+手機直向（窄螢幕）時版面改成單欄：其他四名角色在上方，接著是「你的手牌」，然後是你自己的武將，最後才是行動／確認按鈕——查看自己體力與裝備時不必再往上捲。
 
 一局的目標：依你的身份取勝。主公／忠臣要消滅反賊與內奸；反賊要殺主公；內奸要最後單挑獲勝。
 
@@ -135,8 +143,9 @@ tiiny.site 的限制與差異（詳見 [SECURITY.md](./SECURITY.md) 3.6）：
 | 5173 連接埠被占用 | `npm run dev -- --port 5174` |
 | 畫面空白 | 打開瀏覽器 DevTools console 查看錯誤；先跑 `npm run build` 確認 TypeScript 無誤 |
 | 想從另一台電腦連線 | `npm run dev -- --host 0.0.0.0`，但 dev server 沒有驗證，只可在可信任的內網使用；公開展示請用 build 後的靜態主機 |
-| tiiny.site 顯示「preview」並在一小時後消失 | 代表 ZIP 超過免費方案 3 MB 上限（或含不支援的內容）；本專案約 330 KB，通常是誤打包了 `node_modules`／多一層資料夾 |
-| tiiny.site 開啟後畫面空白 | 確認 ZIP 最上層是 `index.html` 而不是 `dist/index.html`；用 `unzip -l` 檢查 |
+| 想讓同網段的手機／電腦一起玩 | `npm run build && npm run preview -- --host 0.0.0.0 --port 4173`，其他裝置開 `http://<你的內網 IP>:4173/`（例如 `192.168.0.220`） |
+| 部署後畫面空白（404） | 上傳的必須是 `dist/` **內容**（最上層是 `index.html`），不是多一層的 `dist/` 資料夾 |
+| 部署後安全標頭沒生效 | 該主機需支援 `_headers`／`vercel.json`；Cloudflare Pages 與 Netlify 支援，Surge／GitHub Pages 不支援 |
 | 看不到其他玩家的手牌 | 這是正常的，隱藏資訊由 `viewFor()` 遮蔽；只有「上帝視角」會顯示 |
 
 ## 常見規則疑問
@@ -157,7 +166,7 @@ npm run audit      # npm audit，high 以上會失敗
 npm run verify     # test + build + audit（發佈前必跑）
 ```
 
-目前測試共 159 個，涵蓋 160 張牌、關鍵連招、無懈可擊連鎖、延時錦囊、鐵索傳導、首批 16 個與第二批 24 個武將技能、AI 難度與身份信念，以及 1,000 局全牌池＋技能 AI 模擬。
+目前測試共 162 個，涵蓋 160 張牌、關鍵連招、無懈可擊連鎖、延時錦囊、鐵索傳導、首批 16 個與第二批 24 個武將技能、AI 難度與身份信念，以及 1,000 局全牌池＋技能 AI 模擬。
 
 ## 操作方式
 

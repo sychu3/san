@@ -317,7 +317,7 @@
 | 狀態 | 自製 `GameController` + React state |
 | 樣式 | Plain CSS + CSS 變數 |
 | 測試 | Vitest；Playwright 為外部 E2E 工具 |
-| 部署 | 靜態託管（Vercel／Netlify／GitHub Pages；快速試玩可用 tiiny.site 上傳 ZIP） |
+| 部署 | 靜態託管（Cloudflare Pages 為建議，其次 Netlify／Vercel／GitHub Pages） |
 
 ### 4.2 分層
 
@@ -965,7 +965,8 @@ targetValue(j) = P(enemy) × threat(j) − P(ally) × allyValue(j)
 - 平衡調整：依 10,000 局模擬與人工試玩調整 AI 與卡牌權重。
 - 字體與視覺：確認繁體中文字型在不同系統的 fallback；不載入遠端字體。
 - 無障礙與效能：Lighthouse／axe 檢查、首次載入 < 2 秒（一般寬頻）。
-- 部署：確認 `dist/_headers` 或 `vercel.json` 生效，response headers 含 CSP、`X-Frame-Options`、`nosniff`；不支援自訂標頭的主機（如 tiiny.site）只靠 CSP meta，差異記錄於 `SECURITY.md` 3.6。
+- 部署：上 Cloudflare Pages（`_headers` 生效）並確認 response headers 含 CSP、`X-Frame-Options`、`nosniff`；只有 CSP meta 可用的主機差異記錄於 `SECURITY.md` 3.6。
+- 手機版面：直向單欄時，其他角色在上、自己的武將與行動按鈕相鄰放在最下方。
 - 文件：更新 README 的試玩步驟、RULES 的完整規則、SECURITY 的檢查清單。
 - 版本標記與變更紀錄；標明非官方、非商業。
 
@@ -1075,7 +1076,7 @@ M2 全卡池 ──→ M3 武將 ──→ M4 AI
 - 判定管線支援【鬼才】改判、【天妒】取得判定牌；轉化延時錦囊以對照表保存視為牌名。
 - AI 3 難度、公開事件串流與身份信念；控制器可逐座位指定難度。
 - 存檔／重播（只存 seed 與回應）、合成音效、動畫速度、手機直向版面與無障礙調整。
-- 159 個測試、1,000 局全牌池＋技能 AI 模擬、10,000 局壓力測試、production build、`npm audit` 0 漏洞。
+- 162 個測試、1,000 局全牌池＋技能 AI 模擬、10,000 局壓力測試、production build、`npm audit` 0 漏洞。
 - `README.md`、`RULES.md`、`SECURITY.md`、`DESIGN.md` 與部署設定。
 
 ### 10.2 下一步（M6：發佈前打磨）

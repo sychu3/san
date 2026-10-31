@@ -19,6 +19,14 @@ describe('UI 渲染煙霧測試', () => {
     expect(html).not.toContain('dangerouslySetInnerHTML');
   });
 
+  it('App 會顯示非官方聲明與隱私說明', () => {
+    const html = renderToString(<App />);
+    expect(html).toContain('非官方');
+    expect(html).toContain('非商業');
+    expect(html).toContain('不連線伺服器');
+    expect(html).toContain('footer');
+  });
+
   it('LogPanel 會把回合分隔列標成醒目樣式', () => {
     const entries = [
       { seq: 1, kind: 'phase' as const, text: '── 曹操 的回合 ──' },

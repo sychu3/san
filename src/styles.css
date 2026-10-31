@@ -1355,20 +1355,24 @@ input:focus-visible {
   }
 }
 
-/* 手機直向：牌桌改為垂直堆疊，避免水平捲動。 */
+/* 手機直向：單欄堆疊，避免水平捲動。
+   順序：其他角色 → 你的手牌 → 你自己的武將 → 行動按鈕。
+   自己武將放在最底並緊鄰按鈕，選牌時不用往上捲看自己的體力／裝備。 */
 @media (max-width: 720px) and (orientation: portrait) {
   .layout {
+    display: flex;
     flex-direction: column;
     height: auto;
   }
 
-  .table {
-    position: static;
-    min-height: 0;
+  .board {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px;
+  }
+
+  /* 牌桌外框在手機上不需要，讓座位與中央資訊直接參與 .board 的排序。 */
+  .table {
+    display: contents;
   }
 
   .table__felt {
@@ -1379,6 +1383,7 @@ input:focus-visible {
     position: static;
     width: 100%;
     transform: none;
+    order: 0;
   }
 
   .table__center {
@@ -1386,6 +1391,20 @@ input:focus-visible {
     transform: none;
     order: -1;
     margin: 0 0 6px;
+    padding: 0 4px;
+  }
+
+  .hand {
+    order: 1;
+  }
+
+  /* 自己武將：排在最底，緊接在下方就是行動按鈕。 */
+  .table__seat--self {
+    order: 2;
+  }
+
+  .dying-banner {
+    order: -2;
   }
 
   .sidebar {
@@ -1396,6 +1415,23 @@ input:focus-visible {
   .hand__cards {
     flex-wrap: wrap;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Footer：非官方聲明與隱私說明                                        */
+/* ------------------------------------------------------------------ */
+
+.footer {
+  margin-top: 24px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.footer__line {
+  margin: 0 0 4px;
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--muted);
 }
 
 /* ------------------------------------------------------------------ */

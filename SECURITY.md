@@ -128,7 +128,19 @@
 
 ### 3.6 部署
 
-#### Netlify／Cloudflare Pages
+#### Cloudflare Pages（建議）
+
+`public/_headers` 會複製到 `dist/_headers`，Cloudflare Pages 會逐條套用到靜態資源回應，因此下列標頭全部生效：
+
+```bash
+npm run build
+npx wrangler@4 pages deploy dist --project-name sanguosha
+# 或在 Dashboard 用 Upload assets 拖上 dist/
+```
+
+部署後以 `curl -sI https://<專案>.pages.dev/` 確認 response headers。免費方案不限流量，`wrangler` 以 `npx` 執行、不寫入專案依賴。
+
+#### Netlify
 
 `public/_headers` 會複製到 `dist/_headers`，提供：
 
@@ -150,16 +162,18 @@ Cross-Origin-Resource-Policy: same-origin
 
 請在伺服器層設定與 `public/_headers` 相同的標頭。只依賴 HTML 內的 CSP meta 不夠，因為 meta CSP 不支援 `frame-ancestors`。
 
-#### Tiiny Host（tiiny.site）
+#### 不支援自訂標頭的主機（Surge、GitHub Pages、免費拖放主機）
 
-Tiiny Host 是「上傳 ZIP 即上線」的靜態主機，沒有可上傳的標頭設定檔，**因此 `dist/_headers` 與 `vercel.json` 不會生效**，實際防護只剩 `dist/index.html` 內的 production CSP meta。
+這些主機無法套用 `_headers`／`vercel.json`，**實際防護只剩 `dist/index.html` 內的 production CSP meta**。
 
-- 打包時 `index.html` 必須在 ZIP 最上層：`cd dist && zip -r ../sanguosha-tiiny.zip .`。
-- 免費方案限制 3 MB／站、每天 3 次上傳；超限會變成 1 小時後下架的 preview。本專案 `dist/` 約 330 KB。
-- 生效：CSP（`default-src`／`script-src`／`style-src` 為 `'self'`、`connect-src 'none'`、`object-src 'none'` 等）、React escaping、`viewFor()` 遮蔽、request id 驗證。
+- 仍生效：CSP（`default-src`／`script-src`／`style-src` 為 `'self'`、`connect-src 'none'`、`object-src 'none'` 等）、React escaping、`viewFor()` 遮蔽、request id 驗證。
 - 無法設定：`frame-ancestors 'none'`（meta CSP 不支援）、`X-Frame-Options`、`X-Content-Type-Options: nosniff`、`Referrer-Policy`、`Permissions-Policy`、HSTS、COOP/CORP。
-- 影響評估：本作無帳號、無 cookie、無敏感資料，缺少標頭的主要影響是被第三方 iframe 嵌入（點擊劫持）與 MIME 嗅探。tiiny.site 是否額外送出 frame 相關標頭需以實際 response headers 為準（`curl -sI` 或 DevTools 檢查）；若要嚴格保證 frame 保護，請改用支援自訂標頭的主機（Netlify、Cloudflare Pages、Vercel）。
-- 若採用 tiiny.site 公開發佈，請在專案記錄該網址所用的主機，並在下面清單勾選對應項目。
+- 影響評估：本作無帳號、無 cookie、無敏感資料，缺少標頭的主要影響是被第三方 iframe 嵌入（點擊劫持）與 MIME 嗅探。是否另有主機層標頭，需以實際 response headers 為準（`curl -sI` 或 DevTools）。
+- 另外，部分免費拖放主機（例如 tiiny.site）有自動內容政策審查，卡片遊戲可能被拒絕上線，不適合作為公開試玩主機。
+
+#### 內網示範（LAN）
+
+若只是同網段試玩，可用 `npm run preview -- --host 0.0.0.0 --port 4173`，此時同樣只有 CSP meta 生效（Vite preview 不讀 `dist/_headers`），且**沒有任何身分驗證**：只可在可信任的內網使用，不要直接暴露到公網。
 
 #### 開發伺服器
 
@@ -205,7 +219,7 @@ npm run audit
 | AI 推測 | AI 可能從公開行動推測身份 | 這是遊戲設計的一部分；AI 不讀隱藏資料 |
 | 供應鏈未來漏洞 | 今日 audit 乾淨，未來可能出現新 advisory | 定期 `npm audit`、更新依賴、重新測試 |
 | 部署設定錯誤 | 主機未套用 `_headers`／`vercel.json` | 部署後用瀏覽器 DevTools 檢查 response headers |
-| 主機不支援自訂標頭 | 例如 tiiny.site，只剩 CSP meta，無 `frame-ancestors`／`nosniff` | 接受（本作無敏感資料），或改用支援標頭的主機；見 3.6 |
+| 主機不支援自訂標頭 | 例如 Surge／GitHub Pages／免費拖放主機，只剩 CSP meta，無 `frame-ancestors`／`nosniff` | 建議用 Cloudflare Pages／Netlify／Vercel；其他主機需評估後接受，見 3.6 |
 | 瀏覽器 CSP 相容性 | 舊瀏覽器可能忽略部分指令 | 使用現代瀏覽器；不以 CSP 取代輸入驗證 |
 | 文字／字型 | 依賴系統中文字型，不載入遠端字型 | 不影響安全，只影響外觀 |
 
@@ -228,7 +242,7 @@ npm run audit
 - [ ] `npm audit --audit-level=high` 為 0 漏洞。
 - [ ] `dist/index.html` 含 production CSP。
 - [ ] `dist/_headers` 存在且內容正確。
-- [ ] 部署後檢查 response headers 含 CSP、`X-Frame-Options`、`nosniff`（若主機不支援自訂標頭，例如 tiiny.site，改為確認只有 CSP meta 生效並記錄於 3.6）。
+- [ ] 部署後檢查 response headers 含 CSP、`X-Frame-Options`、`nosniff`（Cloudflare Pages／Netlify／Vercel 應全部具備；若主機不支援自訂標頭，改為確認只有 CSP meta 生效並記錄於 3.6）。
 - [ ] 瀏覽器 console 沒有 CSP violation。
 - [ ] 不使用上帝視角時，其他玩家手牌與身份不可見。
 - [ ] 沒有新增外部連線、CDN、字型或分析腳本。
