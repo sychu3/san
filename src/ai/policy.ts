@@ -115,6 +115,30 @@ function selfOf(view: GameView): PlayerView {
 let activeMemory: AiMemory | undefined;
 let activeDifficulty: Difficulty = 'normal';
 
+/**
+ * 反賊可由公開的死亡身份推斷：若忠臣與內奸都已死亡（或已死的反賊數已滿），
+ * 則其他存活的非主公角色必定是反賊隊友。只用公開資訊，不偷看隱藏身份。
+ * 標準局固定為 1 主公、1 忠臣、2 反賊、1 內奸。
+ */
+function deducedRebelAlly(self: PlayerView, view: GameView, target: PlayerView): boolean {
+  if (self.role !== 'rebel' || !activeMemory) return false;
+  const revealed = activeMemory.knownRole;
+  const known = revealed.get(target.id);
+  if (known === 'rebel') return true;
+  if (known !== undefined) return false;
+  const revealedRoles = [...revealed.values()];
+  const deadRebels = revealedRoles.filter((role) => role === 'rebel').length;
+  const loyalDead = revealedRoles.includes('loyal');
+  const spyDead = revealedRoles.includes('spy');
+  // 只有在忠臣與內奸都已公開死亡後，才能斷定其他存活非主公角色必為反賊。
+  if (!(loyalDead && spyDead)) return false;
+  const otherRebels = 2 - 1 - deadRebels; // 自己算一名反賊
+  const aliveOtherNonLord = view.players.filter(
+    (player) => player.alive && player.id !== self.id && player.role !== 'lord',
+  ).length;
+  return otherRebels > 0 && aliveOtherNonLord <= otherRebels;
+}
+
 /** 由身份信念對敵意分數做調整；新手難度完全忽略。 */
 function beliefAdjust(self: PlayerView, target: PlayerView): number {
   if (activeDifficulty === 'easy' || !activeMemory) return 0;
@@ -131,6 +155,8 @@ function roleEnemyScore(view: GameView, self: PlayerView, target: PlayerView): n
   let base: number;
   if (self.role === 'rebel') {
     if (target.role === 'lord') return 100;
+    // 已能推斷是反賊隊友時，不攻擊（例如只剩自己、另一名反賊與主公）。
+    if (deducedRebelAlly(self, view, target)) return -60;
     base = 15;
   } else if (self.role === 'loyal') {
     if (target.role === 'lord') return -100;

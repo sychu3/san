@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decide } from '../ai/policy';
+import { createAiMemory, decide } from '../ai/policy';
 import { createGame, viewFor } from '../engine/state';
 import type {
   Card,
@@ -204,6 +204,45 @@ describe('AI 拆牌判斷', () => {
     expect(decide(selfView, enemyRequest, { rngState: 1 })).toEqual({
       type: 'option',
       optionId: 'chain:enemy',
+    });
+  });
+
+  it('反賊可推斷剩餘非主公角色是隊友（例如主公諸葛亮空城時不決鬥隊友）', () => {
+    const state = fresh();
+    state.players.forEach((item, index) => {
+      item.role = index === 0 ? 'rebel' : index === 1 ? 'lord' : index === 2 ? 'rebel' : index === 3 ? 'loyal' : 'spy';
+      item.alive = index < 3;
+      item.hand = [];
+    });
+    state.players[1]!.generalId = 'zhuge_liang';
+    state.players[0]!.hand = [card(9400, 'duel', 'club', 1)];
+
+    const duel: PlayOption = {
+      id: 'duel:ally',
+      label: '決鬥 → 另一名反賊',
+      kind: 'play',
+      cards: [9400],
+      targets: [2],
+      asCard: 'duel',
+    };
+    const pass: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+    const request = actionRequest(0, [duel, pass]);
+    state.pending = request;
+    const view = viewFor(state, 0);
+
+    // 沒有死亡資訊時，反賊無法確定對方是隊友，仍可能決鬥。
+    expect(decide(view, request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'duel:ally',
+    });
+
+    // 忠臣與內奸都已公開死亡 → 其他存活非主公角色必為反賊，不攻擊。
+    const memory = createAiMemory();
+    memory.knownRole.set(3, 'loyal');
+    memory.knownRole.set(4, 'spy');
+    expect(decide(view, request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
     });
   });
 
