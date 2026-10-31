@@ -107,6 +107,39 @@ describe('手機直向版面：自己武將在下方並緊鄰行動按鈕', () =
     expect(block).toContain('.hand');
   });
 
+  it('淺色主題以 :root[data-theme="light"] 覆寫同一組變數', () => {
+    const lightIndex = css.indexOf(":root[data-theme='light']");
+    expect(lightIndex).toBeGreaterThan(-1);
+    const block = css.slice(lightIndex, css.indexOf('\n}\n', lightIndex));
+    for (const variable of [
+      'color-scheme: light',
+      '--app-bg',
+      '--text:',
+      '--muted:',
+      '--panel-bg',
+      '--seat-bg',
+      '--table-bg',
+      '--card-shadow',
+      '--option-bg',
+      '--modal-bg',
+      '--log-text',
+      '--kingdom-shu',
+    ]) {
+      expect(block, variable).toContain(variable);
+    }
+  });
+
+  it('元件規則不寫死深色底色（改用主題變數）', () => {
+    // 深色與淺色區塊之外，不應再出現深色的寫死背景。
+    const firstLight = css.indexOf(":root[data-theme='light']");
+    const components = css.slice(css.indexOf('\n}\n', firstLight) + 3);
+    expect(components).not.toContain('#101417');
+    expect(components).not.toContain('#17211f');
+    expect(components).not.toContain('rgba(24, 29, 32, 0.92)');
+    expect(components).not.toContain('rgba(26, 32, 36, 0.96)');
+    expect(components).not.toMatch(/background:\s*#1[0-9a-f]{5}/);
+  });
+
   it('自己的武將排在最後、手牌次之，順序在其他角色之後', () => {
     const block = portraitBlock();
     const self = block.match(/\.table__seat--self\s*\{[^}]*order:\s*(\d+)/);

@@ -19,6 +19,12 @@ describe('UI 渲染煙霧測試', () => {
     expect(html).not.toContain('dangerouslySetInnerHTML');
   });
 
+  it('App 頂欄提供主題切換', () => {
+    const html = renderToString(<App />);
+    expect(html).toContain('主題：');
+    expect(html).toContain('深色');
+  });
+
   it('App 會顯示非官方聲明與隱私說明', () => {
     const html = renderToString(<App />);
     expect(html).toContain('非官方');

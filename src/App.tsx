@@ -9,8 +9,10 @@ import { parseSave, SAVE_KEY, serializeSave } from './game/save';
 import {
   loadSettings,
   persistSettings,
+  resolveTheme,
   type AnimationMode,
   type Settings,
+  type ThemeMode,
 } from './game/settings';
 import { playSound } from './audio/sounds';
 import { GameTable } from './ui/GameTable';
@@ -25,6 +27,19 @@ const DIFFICULTY_LABELS: Record<string, string> = {
 };
 
 const DIFFICULTY_ORDER = ['easy', 'normal', 'hard'] as const;
+
+const THEME_ORDER: ThemeMode[] = ['dark', 'light', 'system'];
+
+const THEME_LABELS: Record<ThemeMode, string> = {
+  dark: '深色',
+  light: '淺色',
+  system: '跟隨系統',
+};
+
+function prefersLight(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  return window.matchMedia('(prefers-color-scheme: light)').matches;
+}
 
 const ROLE_GOAL: Record<string, string> = {
   lord: '消滅所有反賊與內奸。誤殺忠臣會棄置所有牌。',
@@ -47,6 +62,7 @@ export default function App() {
   const [replay, setReplay] = useState<ReplayData | null>(null);
   const [replayIndex, setReplayIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [systemLight, setSystemLight] = useState(prefersLight);
   const lastLogSeq = useRef(0);
   const prevHp = useRef<number[]>([]);
 
@@ -58,6 +74,21 @@ export default function App() {
   useEffect(() => {
     persistSettings(settings);
   }, [settings]);
+
+  // 跟隨系統主題時，監聽作業系統的淺色／深色切換。
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    const query = window.matchMedia('(prefers-color-scheme: light)');
+    const onChange = (event: MediaQueryListEvent) => setSystemLight(event.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+
+  // 主題套用在 <html> 上，讓 body 背景與捲軸也一起變。
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    document.documentElement.dataset.theme = resolveTheme(settings.theme, systemLight);
+  }, [settings.theme, systemLight]);
 
   const view = replay ? replay.views[Math.min(replayIndex, replay.views.length - 1)]! : liveView;
   const pending = view.pending;
@@ -228,6 +259,15 @@ export default function App() {
     setSettings((current) => ({ ...current, animation }));
   };
 
+  const setTheme = (theme: ThemeMode) => {
+    setSettings((current) => ({ ...current, theme }));
+  };
+
+  const cycleTheme = () => {
+    const current = THEME_ORDER.indexOf(settings.theme);
+    setTheme(THEME_ORDER[(current + 1) % THEME_ORDER.length]!);
+  };
+
   const animationClass =
     settings.animation === 'off' ? 'app--anim-off' : settings.animation === 'fast' ? 'app--anim-fast' : '';
 
@@ -254,6 +294,14 @@ export default function App() {
             }}
           >
             AI：{DIFFICULTY_LABELS[controller.getDifficulty()] ?? controller.getDifficulty()}
+          </button>
+          <button
+            type="button"
+            className="ghost-btn"
+            onClick={cycleTheme}
+            title="切換主題：深色／淺色／跟隨系統"
+          >
+            主題：{THEME_LABELS[settings.theme]}
           </button>
           <button
             type="button"
@@ -541,8 +589,24 @@ export default function App() {
                   </button>
                 ))}
               </div>
+              <h3>佈景主題</h3>
+              <div className="settings__row">
+                {THEME_ORDER.map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`ghost-btn ${settings.theme === mode ? 'ghost-btn--on' : ''}`}
+                    title={
+                      mode === 'system' ? '跟隨作業系統的淺色／深色設定' : `使用${THEME_LABELS[mode]}主題`
+                    }
+                    onClick={() => setTheme(mode)}
+                  >
+                    {THEME_LABELS[mode]}
+                  </button>
+                ))}
+              </div>
               <p className="modal__note">
-                若系統開啟「減少動態效果」，可將動畫設為關閉。設定只存在本機瀏覽器。
+                若系統開啟「減少動態效果」，可將動畫設為關閉。設定（含主題）只存在本機瀏覽器。
               </p>
             </div>
           </div>

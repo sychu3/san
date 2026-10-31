@@ -6,6 +6,7 @@ import {
   DEFAULT_SETTINGS,
   loadSettings,
   persistSettings,
+  resolveTheme,
   sanitizeSettings,
   SETTINGS_STORAGE_KEY,
 } from '../game/settings';
@@ -110,8 +111,8 @@ describe('M5 存檔與重播', () => {
 describe('M5 設定', () => {
   it('設定可寫入與讀回，損壞時回到預設', () => {
     const storage = fakeStorage();
-    persistSettings({ sound: true, animation: 'fast' }, storage);
-    expect(loadSettings(storage)).toEqual({ sound: true, animation: 'fast' });
+    persistSettings({ sound: true, animation: 'fast', theme: 'light' }, storage);
+    expect(loadSettings(storage)).toEqual({ sound: true, animation: 'fast', theme: 'light' });
 
     storage.store.set(SETTINGS_STORAGE_KEY, '{壞掉');
     expect(loadSettings(storage)).toEqual(DEFAULT_SETTINGS);
@@ -119,14 +120,24 @@ describe('M5 設定', () => {
 
   it('sanitizeSettings 會過濾非法值', () => {
     expect(sanitizeSettings(null)).toEqual(DEFAULT_SETTINGS);
-    expect(sanitizeSettings({ sound: 'yes', animation: 'zzz' })).toEqual({
+    expect(sanitizeSettings({ sound: 'yes', animation: 'zzz', theme: 'neon' })).toEqual({
       sound: false,
       animation: 'full',
+      theme: 'dark',
     });
-    expect(sanitizeSettings({ sound: true, animation: 'off' })).toEqual({
+    expect(sanitizeSettings({ sound: true, animation: 'off', theme: 'light' })).toEqual({
       sound: true,
       animation: 'off',
+      theme: 'light',
     });
+    expect(sanitizeSettings({ theme: 'system' }).theme).toBe('system');
+  });
+
+  it('resolveTheme 會把 system 依系統偏好解析成深色或淺色', () => {
+    expect(resolveTheme('system', true)).toBe('light');
+    expect(resolveTheme('system', false)).toBe('dark');
+    expect(resolveTheme('light', false)).toBe('light');
+    expect(resolveTheme('dark', true)).toBe('dark');
   });
 
   it('沒有 AudioContext 時播放音效不會拋錯', () => {

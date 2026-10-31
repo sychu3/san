@@ -315,7 +315,7 @@
 | 建置 | Vite |
 | UI | React + TypeScript |
 | 狀態 | 自製 `GameController` + React state |
-| 樣式 | Plain CSS + CSS 變數 |
+| 樣式 | Plain CSS + CSS 變數（同一組語意變數支援深色／淺色兩種主題） |
 | 測試 | Vitest；Playwright 為外部 E2E 工具 |
 | 部署 | 靜態託管（Cloudflare Pages 為建議，其次 Netlify／Vercel／GitHub Pages） |
 
@@ -954,7 +954,7 @@ targetValue(j) = P(enemy) × threat(j) − P(ally) × allyValue(j)
 
 - `src/game/save.ts`：存檔格式與驗證（版本、seed、humanId、難度、回應型別）；`parseSave` 對損壞或版本不相容回傳 null。
 - `src/game/replay.ts`：由存檔重建整局；人類回應照存檔、AI 由種子決定。中途存檔會安全停在最後一筆回應。
-- `src/game/settings.ts`＋`src/audio/sounds.ts`：設定只存本機；音效以 Web Audio 合成（預設關閉、無外部音檔、無 CSP 例外）。
+- `src/game/settings.ts`＋`src/audio/sounds.ts`：設定只存本機；音效以 Web Audio 合成（預設關閉、無外部音檔、無 CSP 例外）；主題分深色／淺色／跟隨系統，以 `<html data-theme>` 搭配 CSS 變數實作，`resolveTheme()` 解析跟隨系統。
 - UI：設定／存檔／讀檔重播按鈕、重播控制列（上一步／播放／下一步／跳到最後）、瀕死提示、受傷閃動、Esc 關閉彈窗。
 - 手機直向（≤720px）牌桌改為垂直堆疊；`prefers-reduced-motion` 縮短動畫。
 - 測試：新增 `m5.test.ts` 8 個測試（存檔往返、損壞／版本拒絕、重播一致、中途存檔、偽造 requestId、設定 sanitize 與讀寫、音效不拋錯）；production 檢查手機無水平捲動、Esc 關閉、重播列正常。
@@ -1077,7 +1077,7 @@ M2 全卡池 ──→ M3 武將 ──→ M4 AI
 - AI 3 難度、公開事件串流與身份信念；控制器可逐座位指定難度。
 - 技能目標合理性審查（M4 後修正）：突襲／代打請求（激將、護駕）／借刀殺人／多目標【殺】都以敵我判斷決定是否使用與指定誰；代打請求在引擎端帶上借用者與受害者資訊。
 - 存檔／重播（只存 seed 與回應）、合成音效、動畫速度、手機直向版面與無障礙調整。
-- 174 個測試、1,000 局全牌池＋技能 AI 模擬、10,000 局壓力測試、production build、`npm audit` 0 漏洞。
+- 178 個測試、1,000 局全牌池＋技能 AI 模擬、10,000 局壓力測試、production build、`npm audit` 0 漏洞。
 - `README.md`、`RULES.md`、`SECURITY.md`、`DESIGN.md` 與部署設定。
 
 ### 10.2 下一步（M6：發佈前打磨）
