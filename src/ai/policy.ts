@@ -79,11 +79,12 @@ function applyEvent(view: GameView, memory: AiMemory, event: PublicEvent): void 
   if (event.kind === 'use' && event.cardName && event.source !== null) {
     if (event.cardName === 'dodge') bump(memory.playedDodge, event.source, 1, 0, 20);
     if (event.cardName === 'peach') bump(memory.playedPeach, event.source, 1, 0, 20);
-    if (event.target === lordId && HARMFUL_TRICKS.has(event.cardName)) {
-      bump(memory.rebelScore, event.source, 2);
-    }
-    if (event.target === lordId && BENEFICIAL_TRICKS.has(event.cardName)) {
-      bump(memory.rebelScore, event.source, -1);
+    if (event.target === lordId) {
+      // 直接朝主公出【殺】、拆牌、決鬥等，即使被【閃】掉也是明確的敵意行為。
+      if (HOSTILE_DIRECTED.has(event.cardName)) bump(memory.rebelScore, event.source, 4);
+      // 南蠻入侵／萬箭齊發會掃到全場，證據力弱得多。
+      else if (HOSTILE_GROUP.has(event.cardName)) bump(memory.rebelScore, event.source, 1);
+      else if (BENEFICIAL_TRICKS.has(event.cardName)) bump(memory.rebelScore, event.source, -1);
     }
     return;
   }
@@ -139,14 +140,28 @@ function deducedRebelAlly(self: PlayerView, view: GameView, target: PlayerView):
   return otherRebels > 0 && aliveOtherNonLord <= otherRebels;
 }
 
+/**
+ * 公開行為已明顯偏向某個陣營的分數門檻。
+ * 分數本身是加減累積（見 `applyEvent`），達到門檻就不再只是「稍微調整敵意」，
+ * 而是直接改判敵我：反賊不需要攻擊明顯的同夥，主公／忠臣也沒必要打救過自己的人。
+ */
+const TEAMMATE_EVIDENCE = 6;
+const ALLY_EVIDENCE = -6;
+
 /** 由身份信念對敵意分數做調整；新手難度完全忽略。 */
 function beliefAdjust(self: PlayerView, target: PlayerView): number {
   if (activeDifficulty === 'easy' || !activeMemory) return 0;
   const score = activeMemory.rebelScore.get(target.id) ?? 0;
   if (score === 0) return 0;
   const weight = activeDifficulty === 'hard' ? 0.6 : 0.4;
-  if (self.role === 'rebel') return -score * weight;
+  if (self.role === 'rebel') {
+    // 反賊只要主公死；公開行為明顯像反賊的人就當隊友，不再攻擊（可能是另一名反賊）。
+    if (score >= TEAMMATE_EVIDENCE) return -80;
+    return -score * weight;
+  }
   if (self.role === 'spy') return score * weight * 0.5;
+  // 忠臣／主公：明顯救援過主公的人視為隊友，不再攻擊。
+  if (score <= ALLY_EVIDENCE) return -80;
   return score * weight;
 }
 
@@ -444,8 +459,6 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
         const second = secondId === undefined ? null : view.players[secondId] ?? null;
         const secondEnemy = second ? roleEnemyScore(view, self, second) : 0;
         score += firstEnemy >= 0 && secondEnemy >= 0 && (firstEnemy > 0 || secondEnemy > 0) ? 35 : -20;
-      } else if (option.skill === 'kurou') {
-        score += self.hp >= 2 ? 20 : -40;
       } else if (option.skill === 'fanjian') {
         score += firstEnemy > 0 ? 40 : -30;
       } else if (option.skill === 'jieyin') {
@@ -460,6 +473,15 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
           score += value > 0 ? value : -18;
         }
       }
+    }
+
+    // 【苦肉】可以重複使用，因此獨立於難度之外把關：這招是拿體力換手牌，
+    // 用過頭會把自己送到 1 點體力（甚至被一擊帶走），所以只在用後仍安全、
+    // 而且真的缺牌時才發動。新手難度也一樣，只是價值低一點（較少主動使用）。
+    if (option.kind === 'play' && option.skill === 'kurou') {
+      const safeHp = self.hp - 1 >= 3;
+      const needsCards = self.handCount <= 3;
+      score += safeHp && needsCards ? (activeDifficulty === 'easy' ? 12 : 22) : -60;
     }
 
     if (hasHealTarget && option.asCard === 'peach' && option.targets[0] !== self.id) {
@@ -635,6 +657,22 @@ function chooseResponse(
   if (pass) return { type: 'option', optionId: pass.id };
   return { type: 'option', optionId: options[0]!.id };
 }
+
+/** 直接指向單一目標的敵意行為（可能指向主公）。 */
+const HOSTILE_DIRECTED = new Set<CardName>([
+  'slash',
+  'fire_slash',
+  'thunder_slash',
+  'duel',
+  'dismantle',
+  'snatch',
+  'fire_attack',
+  'indulgence',
+  'supply_shortage',
+]);
+
+/** 會掃到全場（含主公）的敵意牌：證據力較弱。 */
+const HOSTILE_GROUP = new Set<CardName>(['barbarian', 'arrows']);
 
 const HARMFUL_TRICKS = new Set<CardName>([
   'dismantle',

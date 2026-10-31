@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createAiMemory, decide } from '../ai/policy';
+import { createAiMemory, decide, updateMemory } from '../ai/policy';
 import { createGame, viewFor } from '../engine/state';
+import { runGame } from '../engine/engine';
 import type {
   Card,
   CardName,
@@ -570,6 +571,187 @@ describe('技能與牌只對合理目標使用', () => {
       type: 'option',
       optionId: 'pass',
     });
+  });
+
+  it('公開事件：朝主公出【殺】（即使被閃掉）也算敵意證據', () => {
+    const state = fresh();
+    state.publicEvents = [
+      { seq: 1, kind: 'use', source: 3, target: 1, cardName: 'snatch' },
+      { seq: 2, kind: 'use', source: 3, target: 1, cardName: 'slash' },
+    ];
+    const memory = createAiMemory();
+    updateMemory(viewFor(state, 0), memory);
+    expect(memory.rebelScore.get(3)).toBe(8);
+
+    // 南蠻入侵只是掃到主公，證據力弱得多。
+    state.publicEvents = [{ seq: 3, kind: 'use', source: 4, target: 1, cardName: 'barbarian' }];
+    const groupMemory = createAiMemory();
+    updateMemory(viewFor(state, 0), groupMemory);
+    expect(groupMemory.rebelScore.get(4)).toBe(1);
+  });
+
+  it('反賊不會攻擊已明顯曝露的同夥，但仍會打沒有線索的目標', () => {
+    const state = fresh();
+    state.players[0]!.hand = [card(9700, 'slash', 'spade', 7)];
+
+    const atSuspect: PlayOption = {
+      id: 'slash:suspect',
+      label: '殺 → 曾兩度攻擊主公的人',
+      kind: 'play',
+      cards: [9700],
+      targets: [3],
+      asCard: 'slash',
+    };
+    const atUnknown: PlayOption = {
+      id: 'slash:unknown',
+      label: '殺 → 沒有線索的人',
+      kind: 'play',
+      cards: [9700],
+      targets: [2],
+      asCard: 'slash',
+    };
+    const pass: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+
+    const memory = createAiMemory();
+    memory.rebelScore.set(3, 8);
+
+    const onlySuspect = actionRequest(0, [atSuspect, pass]);
+    state.pending = onlySuspect;
+    expect(decide(viewFor(state, 0), onlySuspect, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    const both = actionRequest(0, [atSuspect, atUnknown, pass]);
+    state.pending = both;
+    expect(decide(viewFor(state, 0), both, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:unknown',
+    });
+
+    // 沒有線索時仍會攻擊未知目標（不知道對方是敵是友）。
+    state.pending = onlySuspect;
+    expect(decide(viewFor(state, 0), onlySuspect, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:suspect',
+    });
+  });
+
+  it('忠臣不會攻擊明顯救援過主公的人', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hand = [card(9710, 'slash', 'spade', 7)];
+
+    const helper: PlayOption = {
+      id: 'slash:helper',
+      label: '殺 → 救過主公的人',
+      kind: 'play',
+      cards: [9710],
+      targets: [2],
+      asCard: 'slash',
+    };
+    const pass: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+    const request = actionRequest(0, [helper, pass]);
+    state.pending = request;
+
+    const memory = createAiMemory();
+    memory.rebelScore.set(2, -8);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:helper',
+    });
+  });
+
+  it('苦肉：滿血且缺牌才發動，不會把自己用到剩 1 點體力', () => {
+    const state = fresh();
+    state.players[0]!.generalId = 'huang_gai';
+
+    const kurou: PlayOption = {
+      id: 'kurou',
+      label: '苦肉：失去 1 點體力，摸 2 張牌',
+      kind: 'play',
+      cards: [],
+      targets: [],
+      skill: 'kurou',
+    };
+    const request = actionRequest(0, [kurou, passOption]);
+    state.pending = request;
+
+    // 4 點體力、手牌少 → 值得發動（用完仍有 3 點）。
+    for (let rngState = 1; rngState <= 40; rngState += 1) {
+      expect(decide(viewFor(state, 0), request, { rngState })).toEqual({
+        type: 'option',
+        optionId: 'kurou',
+      });
+    }
+
+    // 只剩 3 點體力 → 不用（用下去會剩 2 點）。
+    state.players[0]!.hp = 3;
+    for (let rngState = 1; rngState <= 40; rngState += 1) {
+      expect(decide(viewFor(state, 0), request, { rngState })).toEqual({
+        type: 'option',
+        optionId: 'pass',
+      });
+    }
+
+    // 新手難度也一樣不會把自己用到 1 點體力。
+    for (let rngState = 1; rngState <= 40; rngState += 1) {
+      expect(decide(viewFor(state, 0), request, { rngState }, createAiMemory(), 'easy')).toEqual({
+        type: 'option',
+        optionId: 'pass',
+      });
+    }
+
+    // 體力足夠但手牌已經很多 → 不需要再換牌。
+    state.players[0]!.hp = 4;
+    state.players[0]!.hand = Array.from({ length: 5 }, (_, index) => card(9600 + index, 'peach', 'heart', 3));
+    for (let rngState = 1; rngState <= 40; rngState += 1) {
+      expect(decide(viewFor(state, 0), request, { rngState })).toEqual({
+        type: 'option',
+        optionId: 'pass',
+      });
+    }
+  });
+
+  it('苦肉：200 局掃描都不會在體力 3 以下或缺牌以外時發動', () => {
+    const unsafe: string[] = [];
+    let uses = 0;
+    for (let seed = 1; seed <= 200; seed += 1) {
+      const state = createGame({ seed });
+      const generator = runGame(state);
+      const rng = { rngState: (state.seed ^ 0x85ebca6b) >>> 0 || 1 };
+      const memories = new Map<number, ReturnType<typeof createAiMemory>>();
+      let step = generator.next();
+      let guard = 0;
+      while (!step.done && guard < 200_000) {
+        guard += 1;
+        const request: Request = step.value;
+        let memory = memories.get(request.player);
+        if (!memory) {
+          memory = createAiMemory();
+          memories.set(request.player, memory);
+        }
+        const response = decide(viewFor(state, request.player), request, rng, memory, 'normal');
+        if (request.kind === 'action' && response.type === 'option') {
+          const option = request.options.find((item) => item.id === response.optionId);
+          if (option?.skill === 'kurou') {
+            uses += 1;
+            const player = state.players[request.player]!;
+            if (player.hp - 1 < 3 || player.hand.length > 3) {
+              unsafe.push(`seed ${seed} hp=${player.hp} hand=${player.hand.length}`);
+            }
+          }
+        }
+        step = generator.next(response);
+      }
+    }
+    expect(uses).toBeGreaterThan(0);
+    expect(unsafe).toEqual([]);
   });
 
   it('【借刀殺人】不會被用來逼敵人打自己的隊友', () => {
