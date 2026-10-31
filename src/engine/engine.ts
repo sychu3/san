@@ -1797,16 +1797,21 @@ function* askForSha(
   context: string,
   target?: PlayerState,
 ): Generator<Request, ShaPlay | null, Response> {
-  const own = yield* askForShaSelf(state, player, context, target);
+  // 把目標帶進請求，讓被要求的角色能判斷這一刀值不值得打（例如被【借刀殺人】逼著打隊友）。
+  const own = yield* askForShaSelf(state, player, context, target, {
+    targets: target ? [target.id] : undefined,
+  });
   if (own) return own;
   if (hasSkill(player, 'jijiang')) {
     for (const ally of turnOrderFrom(state, player.id).slice(1)) {
       if (!ally.alive || generalOf(ally).kingdom !== 'shu') continue;
+      // 標明借用者與被打的目標，讓代打的角色能判斷值不值得（不幫敵人）。
       const borrowed = yield* askForShaSelf(
         state,
         ally,
         `激將：為 ${nameOf(state, player.id)} 打出`,
         undefined,
+        { source: player.id, targets: target ? [target.id] : undefined },
       );
       if (borrowed) {
         log(state, 'play', `${nameOf(state, player.id)} 的【激將】由 ${nameOf(state, ally.id)} 打出【殺】。`);
@@ -1822,6 +1827,7 @@ function* askForShaSelf(
   player: PlayerState,
   context: string,
   target?: PlayerState,
+  extra: ResponseExtra = {},
 ): Generator<Request, ShaPlay | null, Response> {
   const options = getShaOptions(state, player, target);
   if (options.length === 0) return null;
@@ -1832,6 +1838,7 @@ function* askForShaSelf(
     options,
     '是否打出【殺】？',
     context,
+    extra,
   );
   if (!chosen) return null;
   let cards: Card[];
@@ -1931,6 +1938,7 @@ function* askForShan(
         ally,
         `護駕：為 ${nameOf(state, target.id)}`,
         false,
+        { source: target.id },
       );
       if (borrowed) {
         log(state, 'play', `${nameOf(state, target.id)} 的【護駕】由 ${nameOf(state, ally.id)} 打出【閃】。`);
@@ -1946,6 +1954,7 @@ function* askForShanSelf(
   target: PlayerState,
   context: string,
   allowBagua = true,
+  extra: ResponseExtra = {},
 ): Generator<Request, boolean, Response> {
   const options = getShanOptions(target, allowBagua);
   const chosen = yield* askResponse(
@@ -1955,6 +1964,7 @@ function* askForShanSelf(
     options,
     '是否打出【閃】？',
     context,
+    extra,
   );
   if (!chosen) return false;
 
@@ -1965,7 +1975,7 @@ function* askForShanSelf(
       return true;
     }
     log(state, 'play', `${nameOf(state, target.id)} 的【八卦陣】判定失敗。`);
-    return yield* askForShanSelf(state, target, context, false);
+    return yield* askForShanSelf(state, target, context, false, extra);
   }
 
   const cards = takeFromHand(state, target, chosen.cards);

@@ -173,6 +173,29 @@ function roleEnemyScore(view: GameView, self: PlayerView, target: PlayerView): n
   return base + beliefAdjust(self, target);
 }
 
+/**
+ * 【突襲】是否值得發動：需要至少一名「手上有牌、且不是隊友」的目標。
+ * 只看公開資訊（已知身份、手牌張數），不偷看手牌或隱藏身份。
+ * 對忠臣／內奸而言主公是隊友，拿走主公的牌是幫倒忙。
+ */
+function hasTuxiTarget(view: GameView, self: PlayerView): boolean {
+  return view.players.some(
+    (player) =>
+      player.alive &&
+      player.id !== self.id &&
+      player.handCount > 0 &&
+      roleEnemyScore(view, self, player) > 0,
+  );
+}
+
+/** 回應別人的請求時，判斷某個玩家是否為敵人。 */
+function isEnemyOf(view: GameView, self: PlayerView, id: PlayerId | undefined): boolean {
+  if (id === undefined) return false;
+  const player = view.players[id];
+  if (!player) return false;
+  return player.id !== self.id && roleEnemyScore(view, self, player) > 0;
+}
+
 function cardValue(name: CardName): number {
   switch (name) {
     case 'peach':
@@ -325,7 +348,11 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
         if (user && victim) {
           const a = roleEnemyScore(view, self, user);
           const b = roleEnemyScore(view, self, victim);
-          score += a > 0 && b > 0 ? 55 : a > 0 ? 15 : -35;
+          // 讓敵人打敵人最好；逼敵人打自己／隊友、或讓隊友挨刀都是幫倒忙。
+          if (a > 0 && b > 0) score += 55;
+          else if (a > 0) score -= 45;
+          else if (b > 0) score += 30;
+          else score -= 50;
         }
       }
       if (name === 'fire_attack') {
@@ -359,25 +386,33 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
         }
       }
       if (name === 'slash' || name === 'fire_slash' || name === 'thunder_slash') {
-        if (target) {
-          const enemy = roleEnemyScore(view, self, target);
-          if (enemy <= 0) {
-            score -= 80;
-          } else {
-            const damage = 1 + (self.wine ? 1 : 0);
-            score += 40 + enemy * 0.25;
-            if (target.hp <= damage) score += 70;
-            if (target.handCount === 0) score += 12;
-            if (target.equips.armor?.name === 'vine_armor') {
-              score += name === 'fire_slash' ? 25 : name === 'slash' ? -30 : 0;
-            }
-            if (target.equips.armor?.name === 'renwang') score -= 15;
-            // 高手：對手已公開打出多張【閃】，推測其手上【閃】變少。
-            if (activeDifficulty === 'hard') {
-              score += (activeMemory?.playedDodge.get(target.id) ?? 0) * 3;
-            }
+        // 方天畫戟等可指定多個目標：逐一檢查，打到隊友要重罰。
+        let hostileTargets = 0;
+        let friendlyTargets = 0;
+        for (const id of option.targets) {
+          const player = view.players[id];
+          if (!player) continue;
+          const enemy = roleEnemyScore(view, self, player);
+          if (player.id === self.id || enemy <= 0) {
+            friendlyTargets += 1;
+            continue;
+          }
+          hostileTargets += 1;
+          const damage = 1 + (self.wine ? 1 : 0);
+          score += 40 + enemy * 0.25;
+          if (player.hp <= damage) score += 70;
+          if (player.handCount === 0) score += 12;
+          if (player.equips.armor?.name === 'vine_armor') {
+            score += name === 'fire_slash' ? 25 : name === 'slash' ? -30 : 0;
+          }
+          if (player.equips.armor?.name === 'renwang') score -= 15;
+          // 高手：對手已公開打出多張【閃】，推測其手上【閃】變少。
+          if (activeDifficulty === 'hard') {
+            score += (activeMemory?.playedDodge.get(player.id) ?? 0) * 3;
           }
         }
+        if (hostileTargets === 0) score -= 80;
+        score -= friendlyTargets * 90;
         // 有實體【殺】時優先使用，不要把兩張手牌浪費在丈八蛇矛上。
         if (option.skill === 'serpent_spear' && (self.hand ?? []).some((card) => isSlashName(card.name))) {
           score -= 45;
@@ -472,6 +507,10 @@ function chooseResponse(
   }
 
   if (request.need === 'shan') {
+    // 護駕：別人的【閃】由你代打。幫敵人擋刀是幫倒忙，直接拒絕。
+    if (isEnemyOf(view, self, request.source)) {
+      return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+    }
     // 八卦陣是免費判定，先試。
     const bagua = options.find((option) => option.skill === 'bagua');
     if (bagua) return { type: 'option', optionId: bagua.id };
@@ -499,6 +538,15 @@ function chooseResponse(
   }
 
   if (request.need === 'sha') {
+    // 激將：蜀勢力角色代主公打出【殺】。若借用者或被打的目標對自己不利，拒絕。
+    if (isEnemyOf(view, self, request.source)) {
+      return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+    }
+    // 【借刀殺人】等情況會指定受害者：被逼著打自己或隊友時寧可放棄（棄武器）。
+    const victim = request.targets?.[0];
+    if (victim !== undefined && (victim === self.id || !isEnemyOf(view, self, victim))) {
+      return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+    }
     const slash =
       options.find(
         (option) =>
@@ -562,6 +610,10 @@ function chooseResponse(
       const id = skill.skill;
       // 鬼才、流離預設不發動；裸衣沒有【殺】時也不發動。
       if (id === 'guicai' || id === 'liuli') {
+        return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+      }
+      // 突襲會拿走別人的手牌：沒有敵人可拿時（例如只剩主公）改為正常摸兩張。
+      if (id === 'tuxi' && !hasTuxiTarget(view, self)) {
         return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
       }
       if (id === 'luoyi' && !(self.hand ?? []).some((card) => isSlashName(card.name))) {
@@ -726,8 +778,26 @@ export function decide(
     case 'chooseCard':
       return chooseCard(request, view, rng);
     case 'choosePlayers': {
-      const count = Math.max(request.min, Math.min(request.max, request.candidates.length));
-      return { type: 'players', players: request.candidates.slice(0, count) };
+      // 需要指定目標的技能（突襲、流離）只用公開資訊挑人：
+      // 先排敵人（仇恨高的優先、手牌多的優先），隊友排最後，
+      // 且人數以「值得的目標數」為上限，避免把效果指向隊友。
+      const self = selfOf(view);
+      const scored = [...new Set(request.candidates)].flatMap((id) => {
+        const player = view.players[id];
+        if (!player) return [];
+        return [{ id, enemy: roleEnemyScore(view, self, player), handCount: player.handCount }];
+      });
+      const enemies = scored
+        .filter((item) => item.enemy > 0)
+        .sort((a, b) => b.enemy - a.enemy || b.handCount - a.handCount);
+      const rest = scored
+        .filter((item) => item.enemy <= 0)
+        .sort((a, b) => b.handCount - a.handCount);
+      const ranked = [...enemies, ...rest];
+      const max = Math.min(request.max, ranked.length);
+      const min = Math.max(0, Math.min(request.min, max));
+      const count = Math.max(min, Math.min(max, enemies.length));
+      return { type: 'players', players: ranked.slice(0, count).map((item) => item.id) };
     }
     case 'chooseRevealed': {
       const best = [...request.cards].sort((a, b) => cardValue(b.name) - cardValue(a.name))[0];

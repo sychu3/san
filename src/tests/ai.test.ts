@@ -354,3 +354,255 @@ describe('AI 拆牌判斷', () => {
     expect(response).toEqual({ type: 'option', optionId: 'pass' });
   });
 });
+
+describe('技能與牌只對合理目標使用', () => {
+  function actionRequest(player: number, options: PlayOption[]): Request {
+    return {
+      id: 40,
+      player,
+      prompt: '出牌階段：請選擇行動',
+      kind: 'action',
+      options,
+      context: '出牌階段',
+    };
+  }
+
+  function skillChoice(player: number, skill: string): Request {
+    const option: ResponseOption = {
+      id: skill,
+      label: `${skill}：發動`,
+      kind: 'skill',
+      cards: [],
+      skill,
+    };
+    const pass: ResponseOption = { id: 'pass', label: '不出', kind: 'pass', cards: [] };
+    return {
+      id: 41,
+      player,
+      prompt: '是否發動技能？',
+      kind: 'response',
+      need: 'choice',
+      options: [option, pass],
+      context: skill,
+    };
+  }
+
+  function respond(
+    player: number,
+    need: 'sha' | 'shan',
+    cardId: number,
+    asCard: 'slash' | 'dodge',
+    extra: { source?: PlayerId; targets?: PlayerId[] } = {},
+  ): Request {
+    const play: ResponseOption = {
+      id: 'play',
+      label: '打出',
+      kind: 'respond',
+      cards: [cardId],
+      asCard,
+    };
+    const pass: ResponseOption = { id: 'pass', label: '不出', kind: 'pass', cards: [] };
+    return {
+      id: 42,
+      player,
+      prompt: '是否打出？',
+      kind: 'response',
+      need,
+      options: [play, pass],
+      context: '測試',
+      ...extra,
+    };
+  }
+
+  const passOption: PlayOption = {
+    id: 'pass',
+    label: '結束出牌階段',
+    kind: 'pass',
+    cards: [],
+    targets: [],
+  };
+
+  it('忠臣（張遼）不會突襲主公：只有主公手上有牌時改為正常摸兩張', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.generalId = 'zhang_liao';
+    state.players[1]!.hand = [card(9300, 'peach', 'heart', 3)];
+
+    const request = skillChoice(0, 'tuxi');
+    state.pending = request;
+    const view = viewFor(state, 0);
+    for (let rngState = 1; rngState <= 40; rngState += 1) {
+      expect(decide(view, request, { rngState })).toEqual({ type: 'option', optionId: 'pass' });
+    }
+  });
+
+  it('張遼有敵人可偷時仍會發動突襲', () => {
+    const state = fresh();
+    state.players[0]!.generalId = 'zhang_liao';
+    state.players[1]!.hand = [card(9301, 'peach', 'heart', 3)];
+
+    const request = skillChoice(0, 'tuxi');
+    state.pending = request;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'tuxi',
+    });
+  });
+
+  it('突襲選目標時只挑敵人，不會拿隊友（主公）的牌', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[1]!.hand = [card(9302, 'peach', 'heart', 3)];
+    state.players[2]!.hand = [card(9303, 'slash')];
+
+    const request: Request = {
+      id: 43,
+      player: 0,
+      prompt: '選擇至多兩名角色',
+      kind: 'choosePlayers',
+      candidates: [1, 2],
+      min: 1,
+      max: 2,
+      reason: '突襲',
+    };
+    state.pending = request;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'players',
+      players: [2],
+    });
+  });
+
+  it('多目標【殺】（方天畫戟）不會把主公一起掃進去', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hand = [card(9310, 'slash', 'spade', 7)];
+    state.players[2]!.hand = [card(9311, 'dodge')];
+
+    const both: PlayOption = {
+      id: 'slash:both',
+      label: '殺 → 主公與敵人',
+      kind: 'play',
+      cards: [9310],
+      targets: [1, 2],
+      asCard: 'slash',
+    };
+    const enemyOnly: PlayOption = {
+      id: 'slash:enemy',
+      label: '殺 → 敵人',
+      kind: 'play',
+      cards: [9310],
+      targets: [2],
+      asCard: 'slash',
+    };
+    const request = actionRequest(0, [both, enemyOnly, passOption]);
+    state.pending = request;
+    const view = viewFor(state, 0);
+    for (let rngState = 1; rngState <= 40; rngState += 1) {
+      expect(decide(view, request, { rngState })).toEqual({
+        type: 'option',
+        optionId: 'slash:enemy',
+      });
+    }
+  });
+
+  it('被【借刀殺人】逼著打主公時放棄，打敵人才出【殺】', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hand = [card(9320, 'slash', 'spade', 7)];
+
+    const atLord = respond(0, 'sha', 9320, 'slash', { targets: [1] });
+    state.pending = atLord;
+    expect(decide(viewFor(state, 0), atLord, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    const atEnemy = respond(0, 'sha', 9320, 'slash', { targets: [2] });
+    state.pending = atEnemy;
+    expect(decide(viewFor(state, 0), atEnemy, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'play',
+    });
+  });
+
+  it('護駕：替主公出【閃】，但不替敵人擋刀', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hand = [card(9330, 'dodge', 'diamond', 2)];
+
+    const forLord = respond(0, 'shan', 9330, 'dodge', { source: 1 });
+    state.pending = forLord;
+    expect(decide(viewFor(state, 0), forLord, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'play',
+    });
+
+    const forEnemy = respond(0, 'shan', 9330, 'dodge', { source: 2 });
+    state.pending = forEnemy;
+    expect(decide(viewFor(state, 0), forEnemy, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('激將：幫主公打敵人會出【殺】，敵人借用或要打隊友則拒絕', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hand = [card(9340, 'slash', 'spade', 7)];
+
+    const lordAsks = respond(0, 'sha', 9340, 'slash', { source: 1, targets: [2] });
+    state.pending = lordAsks;
+    expect(decide(viewFor(state, 0), lordAsks, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'play',
+    });
+
+    const enemyAsks = respond(0, 'sha', 9340, 'slash', { source: 2, targets: [3] });
+    state.pending = enemyAsks;
+    expect(decide(viewFor(state, 0), enemyAsks, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    const lordAsksToHitLord = respond(0, 'sha', 9340, 'slash', { source: 1, targets: [1] });
+    state.pending = lordAsksToHitLord;
+    expect(decide(viewFor(state, 0), lordAsksToHitLord, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('【借刀殺人】不會被用來逼敵人打自己的隊友', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hand = [card(9350, 'collateral', 'club', 7)];
+    state.players[1]!.equips.weapon = card(9351, 'crossbow', 'club', 1);
+
+    // 敵人（玩家 2）有武器；用借刀逼他打主公（隊友）是幫倒忙。
+    const atLord: PlayOption = {
+      id: 'collateral:2:1',
+      label: '借刀殺人 → 敵人 對 主公 出【殺】',
+      kind: 'play',
+      cards: [9350],
+      targets: [2, 1],
+      asCard: 'collateral',
+    };
+    const atEnemy: PlayOption = {
+      id: 'collateral:2:3',
+      label: '借刀殺人 → 敵人 對 敵人 出【殺】',
+      kind: 'play',
+      cards: [9350],
+      targets: [2, 3],
+      asCard: 'collateral',
+    };
+    const request = actionRequest(0, [atLord, atEnemy, passOption]);
+    state.pending = request;
+    const view = viewFor(state, 0);
+    for (let rngState = 1; rngState <= 40; rngState += 1) {
+      expect(decide(view, request, { rngState })).toEqual({
+        type: 'option',
+        optionId: 'collateral:2:3',
+      });
+    }
+  });
+});

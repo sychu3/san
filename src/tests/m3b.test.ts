@@ -527,3 +527,78 @@ describe('M3 第二批武將技能（鎖定與時機）', () => {
     expect(logged(state, '梟姬')).toBe(true);
   });
 });
+
+describe('代打請求（激將／護駕／借刀殺人）帶有敵我判斷所需的資訊', () => {
+  it('激將：代打【殺】的請求會帶上借用者（主公）', () => {
+    const state = makeState(['lv_bu', 'liu_bei', 'guan_yu', 'zhao_yun', 'diao_chan']);
+    state.turn = 0;
+    state.players[0]!.hand = [card(3100, 'duel', 'club', 1)];
+    state.players[2]!.hand = [card(3101, 'slash', 'spade', 7)];
+
+    const request = drive(
+      state,
+      (current, snapshot) => {
+        if (current.kind === 'action' && current.player === 0) {
+          const duel = current.options.find(
+            (item) => item.asCard === 'duel' && item.targets[0] === 1,
+          );
+          if (duel) return option(duel.id);
+        }
+        return baseline(current, snapshot);
+      },
+      (_current, current) => current.kind === 'response' && current.need === 'sha' && current.player === 2,
+    );
+
+    if (!request || request.kind !== 'response') throw new Error('expected a response request');
+    expect(request.source).toBe(1);
+  });
+
+  it('護駕：代打【閃】的請求會帶上需要保護的人', () => {
+    const state = makeState(['lv_bu', 'cao_cao', 'sima_yi', 'zhao_yun', 'diao_chan']);
+    state.turn = 0;
+    state.players[0]!.hand = [card(3110, 'slash', 'spade', 7)];
+    state.players[2]!.hand = [card(3111, 'dodge', 'diamond', 2)];
+
+    const request = drive(
+      state,
+      (current, snapshot) => {
+        if (current.kind === 'action' && current.player === 0) {
+          const slash = current.options.find(
+            (item) => item.asCard === 'slash' && item.targets[0] === 1,
+          );
+          if (slash) return option(slash.id);
+        }
+        return baseline(current, snapshot);
+      },
+      (_current, current) => current.kind === 'response' && current.need === 'shan' && current.player === 2,
+    );
+
+    if (!request || request.kind !== 'response') throw new Error('expected a response request');
+    expect(request.source).toBe(1);
+  });
+
+  it('借刀殺人：被逼出【殺】的請求會標明受害者', () => {
+    const state = makeState(['lv_bu', 'liu_bei', 'guan_yu', 'zhao_yun', 'diao_chan']);
+    state.turn = 0;
+    state.players[0]!.hand = [card(3120, 'collateral', 'club', 7)];
+    state.players[2]!.equips.weapon = card(3121, 'crossbow', 'club', 1);
+    state.players[2]!.hand = [card(3122, 'slash', 'spade', 7)];
+
+    const request = drive(
+      state,
+      (current, snapshot) => {
+        if (current.kind === 'action' && current.player === 0) {
+          const collateral = current.options.find(
+            (item) => item.asCard === 'collateral' && item.targets[0] === 2 && item.targets[1] === 3,
+          );
+          if (collateral) return option(collateral.id);
+        }
+        return baseline(current, snapshot);
+      },
+      (_current, current) => current.kind === 'response' && current.need === 'sha' && current.player === 2,
+    );
+
+    if (!request || request.kind !== 'response') throw new Error('expected a response request');
+    expect(request.targets).toEqual([3]);
+  });
+});
