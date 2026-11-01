@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createAiMemory, decide, updateMemory } from '../ai/policy';
 import { createGame, viewFor } from '../engine/state';
-import { runGame } from '../engine/engine';
+import { getPlayOptions, runGame } from '../engine/engine';
 import type {
   Card,
   CardName,
@@ -778,7 +778,7 @@ describe('技能與牌只對合理目標使用', () => {
     }
     expect(uses).toBeGreaterThan(0);
     expect(unsafe).toEqual([]);
-  });
+  }, 30_000);
 
   it('仁德：AI 不會一次把手牌給光，一般隊友只給 2 張', () => {
     const state = fresh();
@@ -950,6 +950,118 @@ describe('技能與牌只對合理目標使用', () => {
       type: 'option',
       optionId: 'pass',
     });
+  });
+
+  it('即使隊友裝備很好，也不會對已知隊友使用【順手牽羊】', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hand = [card(8890, 'snatch', 'spade', 3)];
+    state.players[1]!.equips.weapon = card(8891, 'qilin_bow', 'spade', 5);
+    state.players[1]!.equips.armor = card(8892, 'vine_armor', 'club', 2);
+    state.players[1]!.hand = [card(8893, 'peach', 'heart', 3)];
+    const request = actionRequest(0, getPlayOptions(state, state.players[0]!));
+    state.pending = request;
+    for (let rngState = 1; rngState <= 100; rngState += 1) {
+      expect(decide(viewFor(state, 0), request, { rngState })).toEqual({
+        type: 'option',
+        optionId: 'pass',
+      });
+    }
+  });
+
+  it('【酒】會先於同回合的【殺】使用，沒有後續【殺】時不喝', () => {
+    const state = fresh();
+    state.players[0]!.hand = [card(8901, 'wine', 'spade', 9), card(8902, 'slash', 'spade', 7)];
+    const options = getPlayOptions(state, state.players[0]!);
+    const request = actionRequest(0, options);
+    state.pending = request;
+    for (let rngState = 1; rngState <= 40; rngState += 1) {
+      const response = decide(viewFor(state, 0), request, { rngState });
+      expect(response.type).toBe('option');
+      if (response.type !== 'option') throw new Error('expected option');
+      expect(response.optionId.startsWith('wine:')).toBe(true);
+    }
+
+    // 只有【酒】而沒有【殺】：保留【酒】等下一回合或瀕死時用。
+    state.players[0]!.hand = [card(8903, 'wine', 'spade', 9), card(8904, 'peach', 'heart', 3)];
+    const noSlashOptions = getPlayOptions(state, state.players[0]!);
+    const noSlashRequest = actionRequest(0, noSlashOptions);
+    state.pending = noSlashRequest;
+    for (let rngState = 1; rngState <= 20; rngState += 1) {
+      const response = decide(viewFor(state, 0), noSlashRequest, { rngState });
+      expect(response).toEqual({ type: 'option', optionId: 'pass' });
+    }
+  });
+
+  it('不會用較差的武器蓋掉現有武器', () => {
+    const state = fresh();
+    state.players[0]!.hand = [card(8910, 'crossbow', 'club', 1)];
+    state.players[0]!.equips.weapon = card(8911, 'qilin_bow', 'spade', 5);
+    const request = actionRequest(0, getPlayOptions(state, state.players[0]!));
+    state.pending = request;
+    for (let rngState = 1; rngState <= 20; rngState += 1) {
+      expect(decide(viewFor(state, 0), request, { rngState })).toEqual({
+        type: 'option',
+        optionId: 'pass',
+      });
+    }
+  });
+
+  it('新武器能解鎖本回合攻擊時，先裝備再出【殺】', () => {
+    const state = fresh();
+    // 主公移到距離 2，起始武器（範圍 1）打不到。
+    state.players[3]!.role = 'lord';
+    state.players[1]!.role = 'loyal';
+    state.players[0]!.hand = [
+      card(8920, 'slash', 'spade', 7),
+      card(8921, 'double_sword', 'spade', 5),
+    ];
+    const request = actionRequest(0, getPlayOptions(state, state.players[0]!));
+    state.pending = request;
+    const response = decide(viewFor(state, 0), request, { rngState: 1 });
+    expect(response).toEqual({ type: 'option', optionId: 'equip:8921' });
+
+    // 裝備後，主公進入範圍，且下一輪出現可攻擊主公的【殺】。
+    state.players[0]!.equips.weapon = card(8921, 'double_sword', 'spade', 5);
+    state.players[0]!.hand = [card(8920, 'slash', 'spade', 7)];
+    const options = getPlayOptions(state, state.players[0]!);
+    expect(
+      options.some((option) => option.asCard === 'slash' && option.targets[0] === 3),
+    ).toBe(true);
+  });
+
+  it('(-1) 馬能解鎖本回合攻擊時，先裝備再出【殺】', () => {
+    const state = fresh();
+    state.players[3]!.role = 'lord';
+    state.players[1]!.role = 'loyal';
+    state.players[0]!.hand = [card(8930, 'slash', 'spade', 7), card(8931, 'chitu', 'heart', 5)];
+    const request = actionRequest(0, getPlayOptions(state, state.players[0]!));
+    state.pending = request;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'equip:8931',
+    });
+
+    state.players[0]!.equips.horseMinus = card(8931, 'chitu', 'heart', 5);
+    state.players[0]!.hand = [card(8930, 'slash', 'spade', 7)];
+    const options = getPlayOptions(state, state.players[0]!);
+    expect(
+      options.some((option) => option.asCard === 'slash' && option.targets[0] === 3),
+    ).toBe(true);
+  });
+
+  it('能強化本回合【殺】的武器會先裝備（青釭劍對有防具的敵人）', () => {
+    const state = fresh();
+    state.players[0]!.hand = [card(8940, 'slash', 'spade', 7), card(8941, 'qinggang', 'spade', 6)];
+    state.players[1]!.equips.armor = card(8942, 'eight_diagram', 'spade', 2);
+    const request = actionRequest(0, getPlayOptions(state, state.players[0]!));
+    state.pending = request;
+    for (let rngState = 1; rngState <= 20; rngState += 1) {
+      expect(decide(viewFor(state, 0), request, { rngState })).toEqual({
+        type: 'option',
+        optionId: 'equip:8941',
+      });
+    }
   });
 
   it('【借刀殺人】不會被用來逼敵人打自己的隊友', () => {

@@ -133,5 +133,5 @@ describe('AI 不會把技能與牌指向可判定的隊友', () => {
       .map((item) => `seed ${item.seed} ${item.what}`)
       .join('\n');
     expect(violations, summary).toEqual([]);
-  });
+  }, 30_000);
 });

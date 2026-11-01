@@ -370,9 +370,24 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
     const target = option.targets[0] === undefined ? null : view.players[option.targets[0]] ?? null;
 
     switch (option.kind) {
-      case 'pass':
-        score = 0;
+      case 'pass': {
+        // 有明確敵人時，空過有一點成本；只有未知或隊友時，保留手牌較好。
+        const hasEnemy = view.players.some(
+          (player) =>
+            player.alive &&
+            player.id !== self.id &&
+            relationOf(view, self, player) === 'enemy',
+        );
+        const hasUnknown = view.players.some(
+          (player) =>
+            player.alive &&
+            player.id !== self.id &&
+            relationOf(view, self, player) === 'unknown',
+        );
+        score = hasEnemy ? -4 : hasUnknown ? 2 : 6;
+        if (self.handCount <= self.hp) score += 3;
         break;
+      }
       case 'play':
         break;
       default:
@@ -386,7 +401,15 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
 
       if (name === 'ex_nihilo') score += 80;
       if (name === 'wine') {
-        score += slashOptions.length > 0 ? 18 : -20;
+        // 【酒】只有在本回合真的能接上【殺】時才用；而且要排在【殺】前面，
+        // 否則【殺】先打出去之後，酒就完全沒有價值了。
+        const canFollow = slashOptions.some((option) =>
+          option.targets.some((id) => {
+            const player = view.players[id];
+            return Boolean(player) && relationOf(view, self, player) !== 'ally';
+          }),
+        );
+        score += canFollow ? 120 : -35;
       }
       if (name === 'peach') {
         if (option.targets[0] === self.id) {
@@ -403,7 +426,7 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       if (name === 'dismantle' || name === 'snatch') {
         if (target) {
           const base = roleEnemyScore(view, self, target);
-          score += base > 0 ? 35 + base * 0.3 : -40;
+          score += base > 0 ? 35 + base * 0.3 : -160;
           if (target.equips.armor?.name === 'vine_armor' || target.equips.armor?.name === 'eight_diagram') {
             score += 10;
           }
@@ -427,14 +450,14 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
         if (target) {
           const enemy = roleEnemyScore(view, self, target);
           const shaCount = self.hand?.filter((card) => isSlashName(card.name)).length ?? 0;
-          score += enemy > 0 ? 45 + enemy * 0.3 + shaCount * 6 : -60;
+          score += enemy > 0 ? 45 + enemy * 0.3 + shaCount * 6 : -160;
         }
       }
       if (name === 'barbarian' || name === 'arrows') {
         const allies = option.targets.filter(
           (id) => id !== self.id && relationOf(view, self, view.players[id]!) === 'ally',
         );
-        score += 42 + option.targets.length * 5 - allies.length * 30;
+        score += 42 + option.targets.length * 5 - allies.length * 160;
       }
       if (name === 'peach_garden') {
         const net = option.targets.reduce((sum, id) => {
@@ -466,23 +489,23 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
           const b = roleEnemyScore(view, self, victim);
           // 讓敵人打敵人最好；逼敵人打自己／隊友、或讓隊友挨刀都是幫倒忙。
           if (a > 0 && b > 0) score += 55;
-          else if (a > 0) score -= 45;
+          else if (a > 0) score -= 160;
           else if (b > 0) score += 30;
-          else score -= 50;
+          else score -= 160;
         }
       }
       if (name === 'fire_attack') {
         if (target) {
           const enemy = roleEnemyScore(view, self, target);
-          score += enemy > 0 ? 45 + enemy * 0.25 : -40;
+          score += enemy > 0 ? 45 + enemy * 0.25 : -160;
           if (target.handCount > 0) score += 8;
         }
       }
       if (name === 'indulgence') {
-        if (target) score += roleEnemyScore(view, self, target) > 0 ? 55 : -45;
+        if (target) score += roleEnemyScore(view, self, target) > 0 ? 55 : -160;
       }
       if (name === 'supply_shortage') {
-        if (target) score += roleEnemyScore(view, self, target) > 0 ? 50 : -45;
+        if (target) score += roleEnemyScore(view, self, target) > 0 ? 50 : -160;
       }
       if (name === 'lightning') {
         // 閃電是風險牌，血量低時不要放。
@@ -497,7 +520,7 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
             if (!player) continue;
             const enemy = roleEnemyScore(view, self, player);
             if (enemy > 0) score += player.chained ? -6 : 16;
-            else score -= 25;
+            else score -= 160;
           }
         }
       }
@@ -528,19 +551,18 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
           }
         }
         if (hostileTargets === 0) score -= 80;
-        score -= friendlyTargets * 90;
+        score -= friendlyTargets * 300;
         // 有實體【殺】時優先使用，不要把兩張手牌浪費在丈八蛇矛上。
         if (option.skill === 'serpent_spear' && (self.hand ?? []).some((card) => isSlashName(card.name))) {
           score -= 45;
         }
       }
       if (CARD_META[name].type === 'equip') {
-        score += 45;
-        if (option.cards.length > 0 && self.hand) {
-          // 已有同類裝備時略為降低優先度。
-          const card = self.hand.find((item) => item.id === option.cards[0]);
-          if (card && isSlotOccupied(self, card)) score -= 20;
-        }
+        const card =
+          option.cards.length > 0
+            ? (self.hand ?? []).find((item) => item.id === option.cards[0]) ?? null
+            : null;
+        score += card ? equipPlan(view, self, card) : 8;
       }
     }
 
@@ -733,21 +755,154 @@ function rendePlan(view: GameView, self: PlayerView, target: PlayerView): RendeP
   return { score: -40, count: 0 };
 }
 
-function isSlotOccupied(self: PlayerView, card: Card): boolean {
+type EquipSlot = 'weapon' | 'armor' | 'horsePlus' | 'horseMinus';
+
+function equipSlotOf(card: Card): EquipSlot | null {
   const meta = CARD_META[card.name];
-  if (meta.type !== 'equip' || !meta.subtype) return false;
+  if (meta.type !== 'equip' || !meta.subtype) return null;
   switch (meta.subtype) {
     case 'weapon':
-      return self.equips.weapon !== null;
+      return 'weapon';
     case 'armor':
-      return self.equips.armor !== null;
+      return 'armor';
     case 'horse_plus':
-      return self.equips.horsePlus !== null;
+      return 'horsePlus';
     case 'horse_minus':
-      return self.equips.horseMinus !== null;
+      return 'horseMinus';
     default:
-      return false;
+      return null;
   }
+}
+
+/** 單張裝備的靜態價值；武器已把射程與常見效果一併計入。 */
+function equipBaseValue(self: PlayerView, card: Card): number {
+  const slashCount = (self.hand ?? []).filter((item) => isSlashName(item.name)).length;
+  switch (card.name) {
+    case 'crossbow':
+      return 10 + Math.min(12, slashCount * 5);
+    case 'double_sword':
+      return 14;
+    case 'qinggang':
+    case 'ice_sword':
+      return 16;
+    case 'ancient_scimitar':
+      return 13;
+    case 'serpent_spear':
+      return 15 + (self.handCount <= 2 ? 4 : 0);
+    case 'green_dragon':
+      return 18;
+    case 'rock_axe':
+      return 15 + (self.handCount >= 3 ? 4 : 0);
+    case 'fan':
+      return 19;
+    case 'halberd':
+      return 17;
+    case 'qilin_bow':
+      return 21;
+    case 'eight_diagram':
+      return 26;
+    case 'renwang':
+      return 22;
+    case 'vine_armor':
+    case 'silver_lion':
+      return 20;
+    case 'jueying':
+    case 'zhuahuang':
+    case 'dilu':
+    case 'hualiu':
+      return 18;
+    case 'chitu':
+    case 'dawan':
+    case 'zixing':
+      return 16;
+    default:
+      return 10;
+  }
+}
+
+/** 這件武器在本回合是否能強化已經能打的【殺】。 */
+function weaponSameTurnBonus(self: PlayerView, card: Card, hostiles: PlayerView[]): number {
+  const slashCount = (self.hand ?? []).filter((item) => isSlashName(item.name)).length;
+  switch (card.name) {
+    case 'crossbow':
+      return slashCount >= 2 ? 35 : 0;
+    case 'qinggang':
+      return hostiles.some((player) => player.equips.armor !== null) ? 35 : 0;
+    case 'ice_sword':
+      return 32;
+    case 'green_dragon':
+      return 36;
+    case 'double_sword':
+      return 26;
+    case 'ancient_scimitar':
+      return hostiles.some((player) => player.handCount === 0) ? 36 : 0;
+    case 'rock_axe':
+      return self.handCount >= 3 ? 28 : 0;
+    case 'fan':
+      return hostiles.some((player) => player.equips.armor?.name === 'vine_armor') ? 40 : 8;
+    case 'halberd':
+      return self.handCount <= 2 && hostiles.length >= 2 ? 38 : 0;
+    case 'qilin_bow':
+      return hostiles.some((player) => player.equips.horsePlus !== null || player.equips.horseMinus !== null)
+        ? 38
+        : 0;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * 裝備的實際行動價值：
+ * - 已經有同類裝備時，只換「明顯更好」的，不用較差或相同的裝備蓋掉。
+ * - 新武器／(-1) 馬若能解鎖本回合打不到的目標，才大幅提前；
+ *   若只是強化已能打到的【殺】，給較小的加分。
+ * - 沒有【殺】可接時，裝備回歸一般價值，不再搶在攻擊之前。
+ */
+function equipPlan(view: GameView, self: PlayerView, card: Card): number {
+  const slot = equipSlotOf(card);
+  if (!slot) return 0;
+  const value = equipBaseValue(self, card);
+  const current = self.equips[slot];
+  let score = value;
+  if (current) {
+    const oldValue = equipBaseValue(self, current);
+    if (value <= oldValue + 2) return -20;
+    // 換裝會失去原本的裝備，仍要付出一點機會成本。
+    score = value - oldValue - 4;
+  }
+
+  const hand = self.hand ?? [];
+  const canSlash = hand.some((item) => isSlashName(item.name)) && !viewSlashLimitReached(self);
+  if (!canSlash) return score;
+
+  const hostiles = view.players.filter(
+    (player) => player.alive && player.id !== self.id && relationOf(view, self, player) !== 'ally',
+  );
+  if (hostiles.length === 0) return score;
+
+  if (slot === 'weapon') {
+    const currentRange = viewAttackRange(self);
+    const nextRange = (CARD_META[card.name] as { range?: number }).range ?? 1;
+    if (nextRange > currentRange) {
+      const unlocks = hostiles.some((player) => {
+        const dist = viewDistance(view, self, player);
+        return dist > currentRange && dist <= nextRange;
+      });
+      if (unlocks) return score + 70;
+    }
+    return score + weaponSameTurnBonus(self, card, hostiles);
+  }
+
+  if (slot === 'horseMinus' && current === null) {
+    const range = viewAttackRange(self);
+    const unlocks = hostiles.some((player) => {
+      const dist = viewDistance(view, self, player);
+      return dist > range && dist - 1 <= range;
+    });
+    if (unlocks) return score + 65;
+  }
+
+  return score;
 }
 
 function chooseResponse(
@@ -1093,17 +1248,28 @@ export function decide(
       // 先排敵人（仇恨高的優先、手牌多的優先），隊友排最後，
       // 且人數以「值得的目標數」為上限，避免把效果指向隊友。
       const self = selfOf(view);
+      const relationRank: Record<Relation, number> = { enemy: 0, unknown: 1, ally: 2 };
       const scored = [...new Set(request.candidates)].flatMap((id) => {
         const player = view.players[id];
         if (!player) return [];
-        return [{ id, enemy: roleEnemyScore(view, self, player), handCount: player.handCount }];
+        return [
+          {
+            id,
+            enemy: roleEnemyScore(view, self, player),
+            relation: relationOf(view, self, player),
+            handCount: player.handCount,
+          },
+        ];
       });
       const enemies = scored
         .filter((item) => item.enemy > 0)
         .sort((a, b) => b.enemy - a.enemy || b.handCount - a.handCount);
       const rest = scored
         .filter((item) => item.enemy <= 0)
-        .sort((a, b) => b.handCount - a.handCount);
+        .sort(
+          (a, b) =>
+            relationRank[a.relation] - relationRank[b.relation] || b.handCount - a.handCount,
+        );
       const ranked = [...enemies, ...rest];
       const max = Math.min(request.max, ranked.length);
       const min = Math.max(0, Math.min(request.min, max));
