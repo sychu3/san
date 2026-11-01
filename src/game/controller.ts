@@ -46,8 +46,8 @@ export class GameController {
       stepMode?: boolean;
     } = {},
   ) {
-    this.state = createGame(options);
     this.humanId = options.humanId ?? 0;
+    this.state = createGame({ ...options, humanId: this.humanId });
     if (!this.state.players[this.humanId]) {
       throw new Error(`Invalid human player id: ${this.humanId}`);
     }
@@ -183,6 +183,7 @@ export class GameController {
       humanId: this.humanId,
       difficulty: this.difficulty,
       responses: [...this.responses],
+      humanGeneralId: this.state.players[this.humanId]?.generalId,
     });
   }
 

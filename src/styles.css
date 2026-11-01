@@ -1617,3 +1617,191 @@ input:focus-visible {
   margin-top: 10px;
   width: 100%;
 }
+
+/* ------------------------------------------------------------------ */
+/* 開局選將                                                            */
+/* ------------------------------------------------------------------ */
+
+.app__game {
+  display: block;
+}
+
+.setup {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  overflow-y: auto;
+  background: var(--overlay);
+}
+
+.setup__card {
+  width: min(920px, 100%);
+  padding: 24px 26px 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--modal-bg);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+
+.setup__eyebrow {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.3em;
+  color: var(--muted);
+}
+
+.setup__role {
+  margin: 4px 0 2px;
+  font-size: 26px;
+  letter-spacing: 0.2em;
+  color: var(--gold-bright);
+}
+
+.setup__goal {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.setup__hint {
+  margin: 0 0 14px;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: var(--gold-strong);
+}
+
+.setup__generals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+}
+
+.setup__general {
+  --kingdom-color: var(--gold);
+  display: flex;
+  flex: 1 1 220px;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 200px;
+  max-width: 270px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-top: 4px solid var(--kingdom-color);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.setup__general:hover,
+.setup__general:focus-visible {
+  transform: translateY(-2px);
+  border-color: var(--gold);
+  box-shadow: var(--panel-shadow);
+  outline: none;
+}
+
+.setup__general--wei { --kingdom-color: var(--kingdom-wei); }
+.setup__general--shu { --kingdom-color: var(--kingdom-shu); }
+.setup__general--wu { --kingdom-color: var(--kingdom-wu); }
+.setup__general--qun { --kingdom-color: var(--kingdom-qun); }
+
+.setup__general-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.setup__kingdom {
+  padding: 0 4px;
+  border: 1px solid var(--kingdom-color);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--kingdom-color);
+}
+
+.setup__name {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.setup__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.setup__hp-cell {
+  margin-left: 2px;
+  color: var(--vermilion);
+}
+
+.setup__skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.setup__skill {
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--gold-strong);
+}
+
+.setup__skill--none {
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.setup__pick {
+  margin-top: auto;
+  align-self: stretch;
+  padding: 6px 10px;
+  border: 1px solid var(--jade);
+  border-radius: 8px;
+  background: var(--jade-dark);
+  color: var(--jade-text-strong);
+  font-size: 13px;
+  text-align: center;
+}
+
+.setup__seed {
+  margin: 16px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.setup__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+@media (max-width: 760px) {
+  .setup__card {
+    padding: 18px 14px 16px;
+  }
+
+  .setup__generals {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .setup__general {
+    max-width: none;
+  }
+}

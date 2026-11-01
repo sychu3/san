@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PlayerId, Response } from './engine/types';
 import { winnerText } from './engine/state';
-import { randomSeed } from './engine/rng';
-import { ROLE_LABELS } from './data/generals';
+import { ROLE_GOALS, ROLE_LABELS } from './data/generals';
 import { GameController } from './game/controller';
 import { buildReplay, type ReplayData } from './game/replay';
+import { createSetup, type GameSetup } from './game/setup';
 import { parseSave, SAVE_KEY, serializeSave } from './game/save';
 import {
   loadSettings,
@@ -19,6 +19,7 @@ import { GameTable } from './ui/GameTable';
 import { PromptPanel } from './ui/PromptPanel';
 import { LogPanel } from './ui/LogPanel';
 import { CardView } from './ui/CardView';
+import { SetupScreen } from './ui/SetupScreen';
 
 const DIFFICULTY_LABELS: Record<string, string> = {
   easy: '新手',
@@ -41,15 +42,13 @@ function prefersLight(): boolean {
   return window.matchMedia('(prefers-color-scheme: light)').matches;
 }
 
-const ROLE_GOAL: Record<string, string> = {
-  lord: '消滅所有反賊與內奸。誤殺忠臣會棄置所有牌。',
-  loyal: '保護主公，協助主公消滅反賊與內奸。',
-  rebel: '擊殺主公。主公死亡且場上仍有反賊時，反賊勝。',
-  spy: '先協助主公清除反賊，最後成為場上唯一存活者。',
-};
-
 export default function App() {
-  const [controller, setController] = useState(() => new GameController({ stepMode: true }));
+  // 開局前先決定身份，再讓玩家從三名候選武將中選一個。
+  const [setup, setSetup] = useState<GameSetup | null>(() => createSetup());
+  const [started, setStarted] = useState(false);
+  const [controller, setController] = useState(
+    () => new GameController({ seed: setup?.seed, stepMode: true }),
+  );
   const [liveView, setLiveView] = useState(() => controller.getView());
   const [selectedCards, setSelectedCards] = useState<number[]>([]);
   const [selectedPlayers, setSelectedPlayers] = useState<PlayerId[]>([]);
@@ -200,14 +199,7 @@ export default function App() {
     });
   };
 
-  const restart = () => {
-    const next = new GameController({
-      seed: randomSeed(),
-      difficulty: controller.getDifficulty(),
-      stepMode: controller.isStepMode(),
-    });
-    setController(next);
-    setLiveView(next.getView());
+  const resetTransient = () => {
     setSelectedCards([]);
     setSelectedPlayers([]);
     setError(null);
@@ -216,6 +208,32 @@ export default function App() {
     lastLogSeq.current = 0;
     prevHp.current = [];
   };
+
+  /** 開始新的一局：先抽身份與三名候選武將，等玩家選將。 */
+  const beginSetup = () => {
+    setSetup(createSetup());
+    setStarted(false);
+    resetTransient();
+  };
+
+  /** 玩家選定武將後，用同一個 seed 正式建立對局。 */
+  const startGameWithGeneral = (generalId: string) => {
+    if (!setup) return;
+    const next = new GameController({
+      seed: setup.seed,
+      humanId: controller.humanId,
+      humanGeneralId: generalId,
+      difficulty: controller.getDifficulty(),
+      stepMode: controller.isStepMode(),
+    });
+    setController(next);
+    setLiveView(next.getView());
+    setSetup(null);
+    setStarted(true);
+    resetTransient();
+  };
+
+  const restart = beginSetup;
 
   const saveGame = () => {
     try {
@@ -241,6 +259,7 @@ export default function App() {
     try {
       const data = buildReplay(save);
       setReplay(data);
+      setSetup(null);
       setReplayIndex(0);
       setPlaying(false);
       setNotice(null);
@@ -253,6 +272,8 @@ export default function App() {
     setReplay(null);
     setPlaying(false);
     setReplayIndex(0);
+    // 從開局選將畫面進入重播時，離開後回到選將，而不是尚未開始的對局。
+    if (!started) beginSetup();
   };
 
   const setAnimation = (animation: AnimationMode) => {
@@ -273,6 +294,7 @@ export default function App() {
 
   return (
     <div className={`app ${animationClass}`}>
+      <div className="app__game" {...(setup ? { inert: true } : {})}>
       <header className="topbar">
         <div className="topbar__brand">
           <h1>三國殺</h1>
@@ -399,7 +421,7 @@ export default function App() {
               <span className="hand__title">你的手牌</span>
               <span className="hand__role">
                 {human?.role ? ROLE_LABELS[human.role] : '身份未知'}
-                {human && ROLE_GOAL[human.role ?? ''] ? `：${ROLE_GOAL[human.role ?? '']}` : ''}
+                {human && ROLE_GOALS[human.role ?? ''] ? `：${ROLE_GOALS[human.role ?? '']}` : ''}
               </span>
             </div>
             <div className="hand__cards">
@@ -502,6 +524,16 @@ export default function App() {
           對局完全在你的瀏覽器內執行：不連線伺服器、不上傳任何內容、不使用 cookie 或分析腳本；存檔只留在本機。
         </p>
       </footer>
+      </div>
+
+      {setup && (
+        <SetupScreen
+          setup={setup}
+          onPick={startGameWithGeneral}
+          onLoadReplay={loadReplay}
+          onShowRules={() => setShowHelp(true)}
+        />
+      )}
 
       {showHelp && (
         <div className="modal" role="dialog" aria-modal="true" aria-label="規則說明" onClick={() => setShowHelp(false)}>

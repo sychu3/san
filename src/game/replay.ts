@@ -18,7 +18,11 @@ const MAX_REPLAY_REQUESTS = 500_000;
  * 只要控制器與這裡使用相同的 AI 隨機種子與呼叫順序，結果就會完全一致。
  */
 export function buildReplay(save: SaveFile): ReplayData {
-  const state = createGame({ seed: save.seed });
+  const state = createGame({
+    seed: save.seed,
+    humanId: save.humanId,
+    ...(save.humanGeneralId ? { humanGeneralId: save.humanGeneralId } : {}),
+  });
   const generator = runGame(state);
   const aiRng = { rngState: (state.seed ^ AI_RNG_XOR) >>> 0 || 1 };
   const memories = new Map<PlayerId, AiMemory>();

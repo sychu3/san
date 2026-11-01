@@ -24,6 +24,14 @@ export interface CreateGameOptions {
   seed?: number;
   pool?: 'm1' | 'full';
   generalIds?: readonly string[];
+  /** 人類玩家的座位；搭配 `humanGeneralId` 使用。 */
+  humanId?: PlayerId;
+  /**
+   * 人類玩家在開局前選定的武將，必須在 `generalIds` 內。
+   * 只把該武將換到人類座位，不消耗任何隨機數，
+   * 因此同一 seed 的身份與牌堆順序不受選擇影響。
+   */
+  humanGeneralId?: string;
 }
 
 const FIVE_PLAYER_ROLES: readonly Role[] = ['lord', 'loyal', 'rebel', 'rebel', 'spy'];
@@ -61,6 +69,19 @@ export function createGame(options: CreateGameOptions = {}): GameState {
   const roles = shuffle([...FIVE_PLAYER_ROLES], rng);
   const generals = shuffle([...generalIds], rng);
   const deck = shuffle(createDeck(options.pool ?? 'full'), rng);
+
+  // 人類選將：只交換座位上的武將，不動隨機數，讓身份與牌堆和預覽一致。
+  if (options.humanId !== undefined && options.humanGeneralId !== undefined) {
+    const humanId = options.humanId;
+    if (!Number.isInteger(humanId) || humanId < 0 || humanId >= 5) {
+      throw new Error(`不合法的人類座位：${humanId}`);
+    }
+    const chosenIndex = generals.indexOf(options.humanGeneralId);
+    if (chosenIndex < 0) throw new Error(`未知的武將：${options.humanGeneralId}`);
+    const displaced = generals[humanId]!;
+    generals[humanId] = options.humanGeneralId;
+    generals[chosenIndex] = displaced;
+  }
 
   const players: PlayerState[] = [];
   for (let id = 0; id < 5; id += 1) {

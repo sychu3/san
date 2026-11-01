@@ -123,3 +123,10 @@ export const ROLE_LABELS: Record<string, string> = {
   rebel: '反賊',
   spy: '內奸',
 };
+
+export const ROLE_GOALS: Record<string, string> = {
+  lord: '消滅所有反賊與內奸。誤殺忠臣會棄置所有牌。',
+  loyal: '保護主公，協助主公消滅反賊與內奸。',
+  rebel: '擊殺主公。主公死亡且場上仍有反賊時，反賊勝。',
+  spy: '先協助主公清除反賊，最後成為場上唯一存活者。',
+};

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { GameController } from '../game/controller';
 import { buildReplay } from '../game/replay';
 import { createSaveFile, isValidSave, parseSave, serializeSave } from '../game/save';
+import { getGeneral } from '../data/generals';
 import {
   DEFAULT_SETTINGS,
   loadSettings,
@@ -60,6 +61,22 @@ describe('M5 存檔與重播', () => {
     expect(isValidSave(badResponse)).toBe(false);
     const badHuman = { ...base, humanId: 9 };
     expect(isValidSave(badHuman)).toBe(false);
+    const badGeneral = { ...base, humanGeneralId: 'not_a_general' };
+    expect(isValidSave(badGeneral)).toBe(false);
+    expect(isValidSave({ ...base, humanGeneralId: 'cao_cao' })).toBe(true);
+  });
+
+  it('存檔會記下選擇的武將，重播能重現同一位武將', () => {
+    const controller = new GameController({
+      seed: 505,
+      humanId: 0,
+      humanGeneralId: 'cao_cao',
+    });
+    const save = controller.getSaveFile();
+    expect(save.humanGeneralId).toBe('cao_cao');
+
+    const replay = buildReplay(save);
+    expect(replay.views[0]!.players[0]!.generalName).toBe(getGeneral('cao_cao').name);
   });
 
   it('重播同一存檔會得到完全相同的結果與日誌', () => {
