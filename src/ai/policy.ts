@@ -32,6 +32,12 @@ export interface AiMemory {
   /** 公開打出過的【閃】／【桃】次數（高手難度的手牌推測）。 */
   playedDodge: Map<PlayerId, number>;
   playedPeach: Map<PlayerId, number>;
+  /** 同一回合內自己的【仁德】已給出張數，避免一次把手牌給光。 */
+  rendeTurn: number;
+  rendeGiven: number;
+  /** 公開的【仁德】事件對各來源的信念影響總量（每回合上限）。 */
+  giveTurn: number;
+  giveDelta: Map<PlayerId, number>;
 }
 
 export function createAiMemory(): AiMemory {
@@ -41,6 +47,10 @@ export function createAiMemory(): AiMemory {
     knownRole: new Map(),
     playedDodge: new Map(),
     playedPeach: new Map(),
+    rendeTurn: -1,
+    rendeGiven: 0,
+    giveTurn: -1,
+    giveDelta: new Map(),
   };
 }
 
@@ -81,6 +91,46 @@ function applyEvent(view: GameView, memory: AiMemory, event: PublicEvent): void 
     if (event.target === lordId) bump(memory.rebelScore, event.source, 4);
     // 被主公打不算證據：主公沒有任何其他人拿不到的資訊（也用同一套公開事件推理），
     // 開局更是見誰打誰，把他的目標當嫌疑只是雜訊。
+    return;
+  }
+
+  if (event.kind === 'give' && event.source !== null && event.target !== null) {
+    const selfId = view.pending?.player ?? null;
+    // 自己的給牌不拿來更新自己的信念，避免自我強化。
+    if (event.source === selfId) return;
+    // 主公的給牌可能是戰術或誤判，和「主公打誰」一樣不當陣營證據。
+    if (event.source === lordId) return;
+
+    if (memory.giveTurn !== view.turnCount) {
+      memory.giveTurn = view.turnCount;
+      memory.giveDelta = new Map();
+    }
+
+    const target = view.players[event.target] ?? null;
+    const targetScore = memory.rebelScore.get(event.target) ?? 0;
+    const known = target?.role ?? memory.knownRole.get(event.target) ?? null;
+    const targetLooksRebel = known === 'rebel' || (known === null && targetScore >= TEAMMATE_EVIDENCE);
+    const targetLooksLord = event.target === lordId;
+    let delta = 0;
+    if (event.brokeKongcheng) {
+      // 破壞空城是敵意行為，方向與一般送牌相反。
+      if (targetLooksLord) delta = 2;
+      else if (targetLooksRebel) delta = -1;
+    } else if (targetLooksLord) {
+      delta = -2;
+    } else if (targetLooksRebel) {
+      delta = 2;
+    }
+
+    if (delta !== 0) {
+      const used = memory.giveDelta.get(event.source) ?? 0;
+      const remaining = Math.max(0, 4 - Math.abs(used));
+      const applied = Math.sign(delta) * Math.min(Math.abs(delta), remaining);
+      if (applied !== 0) {
+        bump(memory.rebelScore, event.source, applied);
+        memory.giveDelta.set(event.source, used + applied);
+      }
+    }
     return;
   }
 
@@ -171,6 +221,35 @@ function beliefAdjust(self: PlayerView, target: PlayerView): number {
   // 忠臣／主公：明顯救援過主公的人視為隊友，不再攻擊。
   if (score <= ALLY_EVIDENCE) return -80;
   return score * weight;
+}
+
+/** 由公開身份與行為信念得到的敵我三態；未知不當隊友，也不當確定的敵人。 */
+export type Relation = 'ally' | 'enemy' | 'unknown';
+
+function isRoleEnemy(selfRole: Role, otherRole: Role): boolean {
+  if (selfRole === 'rebel') return otherRole === 'lord' || otherRole === 'loyal' || otherRole === 'spy';
+  if (selfRole === 'loyal' || selfRole === 'lord') return otherRole === 'rebel' || otherRole === 'spy';
+  // 內奸沒有同伴；除了「主公在後期是敵人」以外，其餘都先當敵人。
+  return otherRole !== 'spy';
+}
+
+function relationOf(view: GameView, self: PlayerView, target: PlayerView): Relation {
+  if (self.role === null) return 'unknown';
+  if (target.id === self.id) return 'ally';
+  if (!target.alive) return 'unknown';
+  const known = target.role ?? activeMemory?.knownRole.get(target.id) ?? null;
+  if (known !== null) {
+    if (self.role === 'spy' && known === 'lord') {
+      const alive = view.players.filter((player) => player.alive).length;
+      return alive <= 2 ? 'enemy' : 'ally';
+    }
+    return isRoleEnemy(self.role, known) ? 'enemy' : 'ally';
+  }
+  const score = activeMemory?.rebelScore.get(target.id) ?? 0;
+  if (self.role === 'spy') return 'unknown';
+  if (score >= TEAMMATE_EVIDENCE) return self.role === 'rebel' ? 'ally' : 'enemy';
+  if (score <= ALLY_EVIDENCE) return self.role === 'rebel' ? 'enemy' : 'ally';
+  return 'unknown';
 }
 
 function roleEnemyScore(view: GameView, self: PlayerView, target: PlayerView): number {
@@ -352,15 +431,29 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
         }
       }
       if (name === 'barbarian' || name === 'arrows') {
-        const allies = option.targets.filter((id) => id !== self.id && roleEnemyScore(view, self, view.players[id]!) <= 0);
+        const allies = option.targets.filter(
+          (id) => id !== self.id && relationOf(view, self, view.players[id]!) === 'ally',
+        );
         score += 42 + option.targets.length * 5 - allies.length * 30;
       }
       if (name === 'peach_garden') {
         const net = option.targets.reduce((sum, id) => {
           const player = view.players[id];
           if (!player || player.hp >= player.maxHp) return sum;
-          const enemy = roleEnemyScore(view, self, player);
-          return sum + (enemy > 0 ? -18 : 18);
+          const relation = relationOf(view, self, player);
+          if (relation === 'enemy') return sum - 18;
+          if (relation === 'ally') {
+            // 內奸不把主公治療到中低血量之上。
+            if (
+              self.role === 'spy' &&
+              player.role === 'lord' &&
+              player.hp >= Math.max(2, Math.ceil(player.maxHp / 2))
+            ) {
+              return sum;
+            }
+            return sum + 18;
+          }
+          return sum;
         }, 0);
         score += 30 + net;
       }
@@ -457,11 +550,20 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       const first = firstId === undefined ? null : view.players[firstId] ?? null;
       const firstEnemy = first ? roleEnemyScore(view, self, first) : 0;
       if (option.skill === 'rende') {
-        score += firstEnemy <= 0 && self.handCount > self.hp ? 30 : -25;
+        score += first ? rendePlan(view, self, first).score : -50;
       } else if (option.skill === 'zhiheng') {
-        score += self.handCount >= 3 ? 28 : 5;
+        const low = lowValueHandCount(self);
+        score += self.handCount >= 3 && low > 0 ? 28 : -20;
       } else if (option.skill === 'qingnang') {
-        score += first && first.hp < first.maxHp && firstEnemy <= 0 ? 40 : -30;
+        if (first && first.hp < first.maxHp && relationOf(view, self, first) === 'ally') {
+          const capped =
+            self.role === 'spy' &&
+            first.role === 'lord' &&
+            first.hp >= Math.max(2, Math.ceil(first.maxHp / 2));
+          score += capped ? -30 : 40;
+        } else {
+          score -= 30;
+        }
       } else if (option.skill === 'lijian') {
         const secondId = option.targets[1];
         const second = secondId === undefined ? null : view.players[secondId] ?? null;
@@ -505,6 +607,130 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
     if (pass) return { type: 'option', optionId: pass.id };
   }
   return { type: 'option', optionId: best!.id };
+}
+
+const MAX_RENDE_CARDS_PER_TURN = 4;
+const LOW_VALUE_CARD = 55;
+
+function lowValueHandCount(self: PlayerView): number {
+  return (self.hand ?? []).filter((card) => cardValue(card.name) < LOW_VALUE_CARD).length;
+}
+
+function hasLowValueGiveCard(self: PlayerView): boolean {
+  return (self.hand ?? []).some(
+    (card) => card.name !== 'peach' && card.name !== 'peach_garden' && cardValue(card.name) < LOW_VALUE_CARD,
+  );
+}
+
+function rendeBudget(view: GameView): number {
+  if (!activeMemory) return 0;
+  if (activeMemory.rendeTurn !== view.turnCount) return MAX_RENDE_CARDS_PER_TURN;
+  return Math.max(0, MAX_RENDE_CARDS_PER_TURN - activeMemory.rendeGiven);
+}
+
+function viewSeatDistance(view: GameView, from: PlayerId, to: PlayerId): number {
+  if (from === to) return 0;
+  const alive = view.players.filter((player) => player.alive).sort((a, b) => a.seat - b.seat);
+  const fromIndex = alive.findIndex((player) => player.id === from);
+  const toIndex = alive.findIndex((player) => player.id === to);
+  if (fromIndex < 0 || toIndex < 0) return Number.POSITIVE_INFINITY;
+  const n = alive.length;
+  const clockwise = (toIndex - fromIndex + n) % n;
+  const counter = (fromIndex - toIndex + n) % n;
+  return Math.min(clockwise, counter);
+}
+
+function viewDistance(view: GameView, self: PlayerView, target: PlayerView): number {
+  let value = viewSeatDistance(view, self.id, target.id);
+  if (!Number.isFinite(value)) return value;
+  if (target.equips.horsePlus) value += 1;
+  if (self.equips.horseMinus) value -= 1;
+  if (self.skills.includes('mashu')) value -= 1;
+  return Math.max(1, value);
+}
+
+function viewAttackRange(self: PlayerView): number {
+  const weapon = self.equips.weapon;
+  if (!weapon) return 1;
+  return (CARD_META[weapon.name] as { range?: number }).range ?? 1;
+}
+
+function viewInAttackRange(view: GameView, self: PlayerView, target: PlayerView): boolean {
+  if (!self.alive || !target.alive || self.id === target.id) return false;
+  return viewDistance(view, self, target) <= viewAttackRange(self);
+}
+
+function viewSlashLimitReached(self: PlayerView): boolean {
+  if (self.equips.weapon?.name === 'crossbow') return false;
+  if (self.skills.includes('paoxiao')) return false;
+  return self.slashUsed >= 1;
+}
+
+/** 破【空城】後，本回合是否還有【殺】／【決鬥】能立即跟上。 */
+function canPunishAfterGift(view: GameView, self: PlayerView, target: PlayerView): boolean {
+  const hand = self.hand ?? [];
+  const slashCount = hand.filter((card) => isSlashName(card.name)).length;
+  if (slashCount > 0 && !viewSlashLimitReached(self) && viewInAttackRange(view, self, target)) {
+    return true;
+  }
+  const hasDuel = hand.some((card) => card.name === 'duel');
+  return hasDuel && slashCount > 0;
+}
+
+interface RendePlan {
+  score: number;
+  count: number;
+}
+
+/**
+ * 【仁德】是否值得：隊友給牌、敵人空城破防、內奸控制主公血量。
+ * 只使用公開資訊；未知目標預設不給。
+ */
+function rendePlan(view: GameView, self: PlayerView, target: PlayerView): RendePlan {
+  if (!target.alive || target.id === self.id) return { score: -50, count: 0 };
+  const budget = rendeBudget(view);
+  const maxGive = Math.max(0, self.handCount - 1);
+  if (budget <= 0 || maxGive <= 0) return { score: -50, count: 0 };
+
+  const hasKongcheng = target.skills.includes('kongcheng') && target.handCount === 0;
+  const relation = relationOf(view, self, target);
+
+  if (self.role === 'spy') {
+    if (target.role !== 'lord') return { score: -35, count: 0 };
+    const alive = view.players.filter((player) => player.alive).length;
+    if (alive <= 2) {
+      // 最後單挑：若主公靠【空城】擋殺，才給 1 張破防並準備攻擊。
+      if (hasKongcheng && canPunishAfterGift(view, self, target)) return { score: 55, count: 1 };
+      return { score: -35, count: 0 };
+    }
+    if (hasKongcheng) return { score: -35, count: 0 }; // 保留主公的空城
+    const bandMax = Math.max(2, Math.ceil(target.maxHp / 2));
+    if (target.hp <= bandMax && target.handCount <= 1 && hasLowValueGiveCard(self)) {
+      return { score: 35, count: 1 };
+    }
+    return { score: -35, count: 0 };
+  }
+
+  if (relation === 'ally') {
+    // 隊友的【空城】是防禦，不要主動給牌破壞。
+    if (hasKongcheng) return { score: -45, count: 0 };
+    const count = Math.min(2, budget, maxGive);
+    if (count <= 0) return { score: -50, count: 0 };
+    let score = 30;
+    if (self.hp < self.maxHp) score += 18; // 仁德回復的是自己
+    if (target.handCount <= 1) score += 8;
+    if (self.role === 'loyal' && target.role === 'lord') score += 8;
+    return { score, count };
+  }
+
+  if (relation === 'enemy') {
+    if (!hasKongcheng) return { score: -45, count: 0 };
+    if (!canPunishAfterGift(view, self, target)) return { score: -55, count: 0 };
+    if (!hasLowValueGiveCard(self)) return { score: -55, count: 0 };
+    return { score: 50, count: 1 };
+  }
+
+  return { score: -40, count: 0 };
 }
 
 function isSlotOccupied(self: PlayerView, card: Card): boolean {
@@ -557,10 +783,11 @@ function chooseResponse(
       const heal = options.find((option) => option.asCard === 'peach' || option.asCard === 'wine');
       if (heal) return { type: 'option', optionId: heal.id };
     }
-    // 內奸在最後單挑時救主公，避免反賊勝利。
+    // 內奸要避免反賊因主公死亡而獲勝；但如果只剩自己與主公，
+    // 主公死亡反而讓內奸成為唯一存活者而勝利，所以只在還有其他人時救。
     if (self.role === 'spy' && dying?.role === 'lord') {
       const alive = view.players.filter((player) => player.alive).length;
-      if (alive <= 2) {
+      if (alive > 2) {
         const heal = options.find((option) => option.asCard === 'peach');
         if (heal) return { type: 'option', optionId: heal.id };
       }
@@ -605,7 +832,7 @@ function chooseResponse(
       const affectsSelf = targets.includes(self.id) && gains(self);
       const affectsAlly = targets.some((id) => {
         const player = view.players[id];
-        return Boolean(player) && player.id !== self.id && roleEnemyScore(view, self, player) <= 0 && gains(player);
+        return Boolean(player) && player.id !== self.id && relationOf(view, self, player) === 'ally' && gains(player);
       });
       const affectsEnemy = targets.some((id) => {
         const player = view.players[id];
@@ -718,11 +945,49 @@ function chooseCards(
   const self = selfOf(view);
   const hand = self.hand ?? [];
   const values = new Map<number, number>();
+  const nameById = new Map<number, CardName>();
   for (const card of hand) {
     values.set(card.id, cardValue(card.name) + jitter(rng, 3));
+    nameById.set(card.id, card.name);
   }
   const sorted = [...request.cards].sort((a, b) => (values.get(a) ?? 0) - (values.get(b) ?? 0));
-  const count = Math.max(request.min, Math.min(request.max, request.cards.length));
+  const maxAvailable = Math.min(request.max, sorted.length);
+  const min = Math.max(0, Math.min(request.min, maxAvailable));
+  if (maxAvailable <= 0) return { type: 'cards', cards: [] };
+
+  if (request.skill === 'rende') {
+    const target = request.target === undefined ? null : view.players[request.target] ?? null;
+    const budget = rendeBudget(view);
+    const maxGive = Math.max(0, self.handCount - 1);
+    let desired = Math.min(2, budget, maxGive, maxAvailable);
+    if (target) {
+      const hasKongcheng = target.skills.includes('kongcheng') && target.handCount === 0;
+      if ((self.role === 'spy' && target.role === 'lord') || hasKongcheng) {
+        desired = Math.min(1, maxAvailable);
+      }
+    }
+    const count = Math.max(min, Math.min(maxAvailable, desired));
+    if (activeMemory) {
+      if (activeMemory.rendeTurn !== view.turnCount) {
+        activeMemory.rendeTurn = view.turnCount;
+        activeMemory.rendeGiven = 0;
+      }
+      activeMemory.rendeGiven += count;
+    }
+    return { type: 'cards', cards: sorted.slice(0, count) };
+  }
+
+  if (request.skill === 'zhiheng') {
+    const low = sorted.filter((id) => {
+      const name = nameById.get(id);
+      return name !== undefined && cardValue(name) < LOW_VALUE_CARD;
+    });
+    const desired = Math.min(3, Math.max(1, low.length), maxAvailable);
+    const count = Math.max(min, Math.min(maxAvailable, desired));
+    return { type: 'cards', cards: sorted.slice(0, count) };
+  }
+
+  const count = Math.max(min, Math.min(maxAvailable, request.max));
   return { type: 'cards', cards: sorted.slice(0, count) };
 }
 

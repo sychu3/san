@@ -780,6 +780,178 @@ describe('技能與牌只對合理目標使用', () => {
     expect(unsafe).toEqual([]);
   });
 
+  it('仁德：AI 不會一次把手牌給光，一般隊友只給 2 張', () => {
+    const state = fresh();
+    state.players[0]!.role = 'rebel';
+    state.players[0]!.hand = [
+      card(8801, 'slash', 'spade', 7),
+      card(8802, 'dodge', 'heart', 2),
+      card(8803, 'peach', 'heart', 3),
+      card(8804, 'wine', 'spade', 9),
+    ];
+    const request: Request = {
+      id: 880,
+      player: 0,
+      prompt: '選擇要交給 玩家3 的手牌（可多選）',
+      kind: 'chooseCards',
+      cards: [8801, 8802, 8803, 8804],
+      min: 1,
+      max: 4,
+      reason: '仁德',
+      skill: 'rende',
+      target: 2,
+    };
+    state.pending = request;
+    const response = decide(viewFor(state, 0), request, { rngState: 3 });
+    if (response.type !== 'cards') throw new Error('expected cards');
+    expect(response.cards.length).toBe(2);
+  });
+
+  it('仁德：破敵人 0 手牌的【空城】時只給 1 張', () => {
+    const state = fresh();
+    state.players[0]!.role = 'rebel';
+    state.players[0]!.hand = [
+      card(8811, 'slash', 'spade', 7),
+      card(8812, 'wine', 'spade', 9),
+      card(8813, 'peach', 'heart', 3),
+    ];
+    state.players[2]!.generalId = 'zhuge_liang';
+    state.players[2]!.hand = [];
+
+    const request: Request = {
+      id: 881,
+      player: 0,
+      prompt: '選擇要交給 玩家3 的手牌（可多選）',
+      kind: 'chooseCards',
+      cards: [8811, 8812, 8813],
+      min: 1,
+      max: 3,
+      reason: '仁德',
+      skill: 'rende',
+      target: 2,
+    };
+    state.pending = request;
+    const response = decide(viewFor(state, 0), request, { rngState: 3 });
+    if (response.type !== 'cards') throw new Error('expected cards');
+    expect(response.cards.length).toBe(1);
+  });
+
+  it('仁德：不會破壞隊友【空城】，但會破敵人的空城以接上【殺】', () => {
+    // 隊友諸葛亮 0 手牌：保留空城。
+    const allyState = fresh();
+    allyState.players[0]!.role = 'rebel';
+    allyState.players[0]!.hand = [card(8821, 'slash', 'spade', 7), card(8822, 'wine', 'spade', 9)];
+    allyState.players[2]!.generalId = 'zhuge_liang';
+    allyState.players[2]!.hand = [];
+    const allyRequest = actionRequest(0, [
+      { id: 'rende:2', label: '仁德', kind: 'play', cards: [], targets: [2], skill: 'rende' },
+      passOption,
+    ]);
+    allyState.pending = allyRequest;
+    const allyMemory = createAiMemory();
+    allyMemory.knownRole.set(2, 'rebel');
+    expect(
+      decide(viewFor(allyState, 0), allyRequest, { rngState: 1 }, allyMemory),
+    ).toEqual({ type: 'option', optionId: 'pass' });
+
+    // 敵人諸葛亮 0 手牌，且自己手上有【殺】在範圍內：給 1 張破空城。
+    const enemyState = fresh();
+    enemyState.players[0]!.role = 'loyal';
+    enemyState.players[0]!.hand = [card(8823, 'slash', 'spade', 7), card(8824, 'wine', 'spade', 9)];
+    enemyState.players[0]!.equips.weapon = card(8825, 'double_sword', 'spade', 5);
+    enemyState.players[2]!.generalId = 'zhuge_liang';
+    enemyState.players[2]!.hand = [];
+    const enemyRequest = actionRequest(0, [
+      { id: 'rende:2', label: '仁德', kind: 'play', cards: [], targets: [2], skill: 'rende' },
+      passOption,
+    ]);
+    enemyState.pending = enemyRequest;
+    const enemyMemory = createAiMemory();
+    enemyMemory.rebelScore.set(2, 8);
+    for (let rngState = 1; rngState <= 20; rngState += 1) {
+      expect(
+        decide(viewFor(enemyState, 0), enemyRequest, { rngState }, enemyMemory),
+      ).toEqual({ type: 'option', optionId: 'rende:2' });
+    }
+  });
+
+  it('內奸仁德：只在中低血量且缺牌時給主公 1 張，最後單挑不給', () => {
+    const state = fresh();
+    state.players[0]!.role = 'spy';
+    state.players[0]!.hand = [card(8831, 'wine', 'spade', 9), card(8832, 'slash', 'spade', 7)];
+    state.players[1]!.hand = [];
+    state.players[1]!.maxHp = 4;
+    const request = actionRequest(0, [
+      { id: 'rende:1', label: '仁德', kind: 'play', cards: [], targets: [1], skill: 'rende' },
+      passOption,
+    ]);
+    state.pending = request;
+
+    // 主公滿血：不給。
+    state.players[1]!.hp = 4;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    // 主公中低血量且缺牌：給 1 張。
+    state.players[1]!.hp = 2;
+    for (let rngState = 1; rngState <= 20; rngState += 1) {
+      expect(decide(viewFor(state, 0), request, { rngState })).toEqual({
+        type: 'option',
+        optionId: 'rende:1',
+      });
+    }
+
+    // 只剩內奸與主公：不給，準備單挑。
+    state.players[2]!.alive = false;
+    state.players[3]!.alive = false;
+    state.players[4]!.alive = false;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('內奸瀕死救援：還有其他人時救主公，只剩兩人時讓主公死亡以取勝', () => {
+    const state = fresh();
+    state.players[0]!.role = 'spy';
+    state.players[1]!.hp = 0;
+    const peach: ResponseOption = {
+      id: 'peach',
+      label: '使用【桃】',
+      kind: 'respond',
+      cards: [8840],
+      asCard: 'peach',
+    };
+    const pass: ResponseOption = { id: 'pass', label: '不出', kind: 'pass', cards: [] };
+    const request: Request = {
+      id: 884,
+      player: 0,
+      prompt: '是否救助 主公？',
+      kind: 'response',
+      need: 'peach',
+      options: [peach, pass],
+      context: '瀕死',
+    };
+    state.pending = request;
+
+    // 還有反賊／忠臣在場：救主公，避免反賊勝利。
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'peach',
+    });
+
+    // 只剩內奸與主公：主公死亡直接讓內奸成為唯一存活者。
+    state.players[2]!.alive = false;
+    state.players[3]!.alive = false;
+    state.players[4]!.alive = false;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
   it('【借刀殺人】不會被用來逼敵人打自己的隊友', () => {
     const state = fresh();
     state.players[0]!.role = 'loyal';

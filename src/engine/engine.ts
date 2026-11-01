@@ -182,6 +182,7 @@ function* askCards(
   max: number,
   reason: string,
   prompt: string,
+  extra: { skill?: string; target?: PlayerId } = {},
 ): Generator<Request, number[], Response> {
   const allowed = [...new Set(cardIds)];
   if (allowed.length === 0 || max <= 0) return [];
@@ -192,6 +193,8 @@ function* askCards(
     min,
     max,
     reason,
+    ...(extra.skill !== undefined ? { skill: extra.skill } : {}),
+    ...(extra.target !== undefined ? { target: extra.target } : {}),
   };
   const response = yield* ask(state, request);
   if (response.type !== 'cards') throw new Error(`${reason}: expected cards response`);
@@ -1400,6 +1403,8 @@ function* resolveRende(
   const target = option.targets[0] === undefined ? null : state.players[option.targets[0]] ?? null;
   if (!target || !target.alive || target.id === player.id || player.hand.length === 0) return;
 
+  // 【空城】在給牌前仍有效時，這張牌會破壞空城；這是公開可觀察的資訊。
+  const brokeKongcheng = hasSkill(target, 'kongcheng') && target.hand.length === 0;
   const ids = yield* askCards(
     state,
     player,
@@ -1408,6 +1413,7 @@ function* resolveRende(
     player.hand.length,
     '仁德',
     `選擇要交給 ${nameOf(state, target.id)} 的手牌（可多選）`,
+    { skill: 'rende', target: target.id },
   );
   const cards = takeFromHand(state, player, ids);
   target.hand.push(...cards);
@@ -1418,6 +1424,13 @@ function* resolveRende(
     'play',
     `${nameOf(state, player.id)} 發動【仁德】，交給 ${nameOf(state, target.id)} ${cards.length} 張牌。`,
   );
+  recordEvent(state, {
+    kind: 'give',
+    source: player.id,
+    target: target.id,
+    amount: cards.length,
+    brokeKongcheng,
+  });
   if (given >= 2 && !player.marks.rende_healed) {
     player.marks.rende_healed = true;
     heal(state, player, 1, '仁德');
@@ -1434,6 +1447,7 @@ function* resolveZhiheng(state: GameState, player: PlayerState): Generator<Reque
     player.hand.length,
     '制衡',
     '選擇要棄置的手牌（可多選）',
+    { skill: 'zhiheng' },
   );
   const cards = takeFromHand(state, player, ids);
   pushDiscard(state, cards);

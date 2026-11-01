@@ -62,6 +62,76 @@ describe('M4 公開事件與身份信念', () => {
     expect(memory.rebelScore.get(3) ?? 0).toBeLessThan(0);
   });
 
+  it('仁德公開事件以弱證據更新隊友判斷，破空城則反向計分', () => {
+    const memory = createAiMemory();
+    const view = {
+      turnCount: 1,
+      pending: null,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null), player(4, null)],
+      events: [
+        { seq: 1, kind: 'give', source: 2, target: 1, amount: 2 },
+        { seq: 2, kind: 'give', source: 3, target: 4, amount: 1 },
+      ],
+    } as unknown as GameView;
+    memory.rebelScore.set(4, 8);
+
+    updateMemory(view, memory);
+    expect(memory.rebelScore.get(2)).toBe(-2);
+    expect(memory.rebelScore.get(3)).toBe(2);
+
+    const brokeMemory = createAiMemory();
+    const brokeView = {
+      turnCount: 2,
+      pending: null,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null), player(4, null)],
+      events: [
+        { seq: 1, kind: 'give', source: 2, target: 1, amount: 1, brokeKongcheng: true },
+        { seq: 2, kind: 'give', source: 3, target: 4, amount: 1, brokeKongcheng: true },
+      ],
+    } as unknown as GameView;
+    brokeMemory.rebelScore.set(4, 8);
+
+    updateMemory(brokeView, brokeMemory);
+    expect(brokeMemory.rebelScore.get(2)).toBe(2);
+    expect(brokeMemory.rebelScore.get(3)).toBe(-1);
+  });
+
+  it('仁德事件不因自己的給牌自我強化，且同回合有上限', () => {
+    const memory = createAiMemory();
+    const selfRequest: Request = {
+      id: 1,
+      player: 2,
+      prompt: '出牌階段：請選擇行動',
+      kind: 'action',
+      options: [],
+      context: '出牌階段',
+    };
+    const view = {
+      turnCount: 3,
+      pending: selfRequest,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null)],
+      events: [{ seq: 1, kind: 'give', source: 2, target: 1, amount: 2 }],
+    } as unknown as GameView;
+    updateMemory(view, memory);
+    expect(memory.rebelScore.get(2)).toBeUndefined();
+
+    const capMemory = createAiMemory();
+    const capView = {
+      turnCount: 4,
+      pending: null,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null)],
+      events: Array.from({ length: 5 }, (_, index) => ({
+        seq: index + 1,
+        kind: 'give' as const,
+        source: 2,
+        target: 1,
+        amount: 2,
+      })),
+    } as unknown as GameView;
+    updateMemory(capView, capMemory);
+    expect(capMemory.rebelScore.get(2)).toBe(-4);
+  });
+
   it('高手難度會用信念選擇高嫌疑目標，新手忽略信念', () => {
     const state = createGame({ seed: 3 });
     const roles = ['loyal', 'lord', 'rebel', 'rebel', 'rebel'] as const;

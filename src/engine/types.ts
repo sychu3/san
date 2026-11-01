@@ -99,13 +99,15 @@ export type Difficulty = 'easy' | 'normal' | 'hard';
  */
 export interface PublicEvent {
   seq: number;
-  kind: 'use' | 'damage' | 'death' | 'save';
+  kind: 'use' | 'damage' | 'death' | 'save' | 'give';
   source: PlayerId | null;
   target: PlayerId | null;
   cardName?: CardName;
   amount?: number;
   /** 只有 kind === 'death' 且身份公開時才有。 */
   role?: Role;
+  /** 只有 kind === 'give' 才有：給牌前目標是否處於 0 手牌【空城】。 */
+  brokeKongcheng?: boolean;
 }
 export type Kingdom = 'wei' | 'shu' | 'wu' | 'qun';
 export type Gender = 'male' | 'female';
@@ -257,6 +259,10 @@ export type Request =
       min: number;
       max: number;
       reason: string;
+      /** 需要自行挑牌的主動技能（例如仁德、制衡），供 AI 決定張數。 */
+      skill?: string;
+      /** 技能指定的目標（例如仁德的收牌者）。 */
+      target?: PlayerId;
     })
   | (RequestBase & {
       kind: 'choosePlayers';

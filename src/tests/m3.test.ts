@@ -207,6 +207,35 @@ describe('M3 首批武將技能', () => {
     expect(logged(state, '仁德')).toBe(true);
   });
 
+  it('仁德：記錄公開 give 事件，並標記是否破壞空城', () => {
+    const state = makeState(['liu_bei', 'zhuge_liang', 'guan_yu', 'zhao_yun', 'lv_bu']);
+    state.players[0]!.hand = [card(112, 'slash', 'spade', 7), card(113, 'wine', 'spade', 9)];
+    state.players[1]!.hand = [];
+
+    useOption(
+      state,
+      0,
+      (item) => item.skill === 'rende' && item.targets[0] === 1,
+      (request, current) => {
+        if (request.kind === 'chooseCards' && request.reason === '仁德') {
+          expect(request.skill).toBe('rende');
+          expect(request.target).toBe(1);
+          return { type: 'cards', cards: request.cards.slice(0, 1) };
+        }
+        return baseline(request, current);
+      },
+    );
+
+    const give = state.publicEvents.find((event) => event.kind === 'give');
+    expect(give).toMatchObject({
+      kind: 'give',
+      source: 0,
+      target: 1,
+      amount: 1,
+      brokeKongcheng: true,
+    });
+  });
+
   it('激將：主公劉備可令蜀勢力角色代打【殺】', () => {
     const state = makeState(['zhang_fei', 'liu_bei', 'guan_yu', 'zhao_yun', 'lv_bu']);
     state.turn = 0;
