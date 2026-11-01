@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { createGame } from '../engine/state';
-import { CANDIDATE_COUNT, createSetup, generalCandidates } from '../game/setup';
+import { CANDIDATE_COUNT, createSetup, generalCandidates, type GameSetup } from '../game/setup';
 import { getGeneral } from '../data/generals';
+
+/** 找一個符合條件的人類身份（最多掃 300 個 seed）。 */
+function setupWith(check: (setup: GameSetup) => boolean): GameSetup | null {
+  for (let seed = 1; seed <= 300; seed += 1) {
+    const setup = createSetup(0, seed);
+    if (check(setup)) return setup;
+  }
+  return null;
+}
 
 describe('開局選將', () => {
   it('候選武將為 3 名不重複，且同一 seed 固定', () => {
@@ -21,26 +30,62 @@ describe('開局選將', () => {
     expect(sets.size).toBeGreaterThan(1);
   });
 
-  it('createSetup 的身份與正式對局一致', () => {
+  it('createSetup 的身份、座位與正式對局一致', () => {
     const setup = createSetup(0, 777);
     const state = createGame({ seed: 777, humanId: 0 });
+    const lord = state.players.find((player) => player.role === 'lord')!;
     expect(setup.role).toBe(state.players[0]!.role);
-    expect(setup.candidates).toEqual(generalCandidates(777));
+    expect(setup.humanSeat).toBe(0);
+    expect(setup.lordSeat).toBe(lord.id);
+    expect(setup.candidates).toHaveLength(CANDIDATE_COUNT);
+    expect(new Set(setup.candidates).size).toBe(CANDIDATE_COUNT);
   });
 
-  it('指定 humanGeneralId 會換上該武將，且五人武將仍不重複', () => {
+  it('人類不是主公時：看得到主公武將、候選不重複，且選將不會換掉主公武將', () => {
+    const setup = setupWith((item) => item.role !== 'lord');
+    expect(setup).not.toBeNull();
+    if (!setup) return;
+
+    expect(setup.lordGeneralId).not.toBeNull();
+    expect(setup.candidates).not.toContain(setup.lordGeneralId);
+    expect(setup.lordDistance).toBeGreaterThanOrEqual(1);
+    expect(setup.lordDistance).toBeLessThanOrEqual(2);
+
+    const target = setup.candidates[0]!;
+    const chosen = createGame({ seed: setup.seed, humanId: 0, humanGeneralId: target });
+    expect(chosen.players[0]!.generalId).toBe(target);
+    const lord = chosen.players.find((player) => player.role === 'lord')!;
+    expect(lord.generalId).toBe(setup.lordGeneralId);
+    expect(new Set(chosen.players.map((player) => player.generalId)).size).toBe(5);
+  });
+
+  it('人類是主公時：沒有主公武將，由自己先選，距離為 0', () => {
+    const setup = setupWith((item) => item.role === 'lord');
+    expect(setup).not.toBeNull();
+    if (!setup) return;
+
+    expect(setup.lordGeneralId).toBeNull();
+    expect(setup.lordSeat).toBe(setup.humanSeat);
+    expect(setup.lordDistance).toBe(0);
+
+    const target = setup.candidates[0]!;
+    const chosen = createGame({ seed: setup.seed, humanId: 0, humanGeneralId: target });
+    expect(chosen.players[0]!.generalId).toBe(target);
+    expect(chosen.players[0]!.role).toBe('lord');
+    // 主公體力上限 +1。
+    expect(chosen.players[0]!.maxHp).toBe(getGeneral(target).maxHp + 1);
+  });
+
+  it('指定 humanGeneralId 會換上該武將，且不影響身份與牌堆', () => {
     const base = createGame({ seed: 4242 });
     const target = generalCandidates(4242)[0]!;
     const chosen = createGame({ seed: 4242, humanId: 0, humanGeneralId: target });
 
     expect(chosen.players[0]!.generalId).toBe(target);
     expect(new Set(chosen.players.map((player) => player.generalId)).size).toBe(5);
-
-    // 選將不影響身份與牌堆：同一 seed 的身份、摸牌順序都一樣。
     expect(chosen.players.map((player) => player.role)).toEqual(base.players.map((player) => player.role));
     expect(chosen.deck.map((card) => card.id)).toEqual(base.deck.map((card) => card.id));
 
-    // 體力上限依最終武將與身份重算（主公 +1）。
     for (const player of chosen.players) {
       const general = getGeneral(player.generalId);
       expect(player.maxHp).toBe(general.maxHp + (player.role === 'lord' ? 1 : 0));

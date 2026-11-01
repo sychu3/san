@@ -19,11 +19,13 @@ describe('UI 渲染煙霧測試', () => {
     expect(html).not.toContain('dangerouslySetInnerHTML');
   });
 
-  it('App 開局會顯示身份與三名候選武將', () => {
+  it('App 開局會顯示身份、座位與三名候選武將', () => {
     const html = renderToString(<App />);
     expect(html).toContain('你的身份');
     expect(html).toContain('3 選 1');
     expect(html).toContain('setup__general');
+    expect(html).toContain('setup__seats');
+    expect(html).toContain('號位');
   });
 
   it('App 頂欄提供主題切換', () => {

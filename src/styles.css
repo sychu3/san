@@ -1634,7 +1634,8 @@ input:focus-visible {
   place-items: center;
   padding: 20px;
   overflow-y: auto;
-  background: var(--overlay);
+  /* 用不透明背景蓋住底下的對局，避免在選將前看到 AI 的武將。 */
+  background: var(--app-bg);
 }
 
 .setup__card {
@@ -1804,4 +1805,108 @@ input:focus-visible {
   .setup__general {
     max-width: none;
   }
+}
+
+/* 開局選將：位置與主公武將 */
+
+.setup__board {
+  margin: 0 auto 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.setup__seats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.setup__seat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 64px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.setup__seat--self {
+  border-color: var(--jade);
+  color: var(--jade-text-strong);
+}
+
+.setup__seat--lord {
+  border-color: var(--gold);
+  color: var(--gold-bright);
+}
+
+.setup__seat-num {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.setup__seat-marks {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.setup__position {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.setup__lord {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 14px;
+}
+
+.setup__lord-tag {
+  align-self: flex-start;
+  margin-bottom: 2px;
+  padding: 1px 6px;
+  border: 1px solid var(--gold);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--gold-bright);
+}
+
+.setup__general--static {
+  flex: none;
+  min-width: 220px;
+  cursor: default;
+}
+
+.setup__general--static:hover {
+  transform: none;
+  border-color: var(--line-strong);
+  border-top-color: var(--kingdom-color);
+  box-shadow: none;
+}
+
+.setup__lord-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.setup__lord-note--self {
+  margin-bottom: 14px;
+}
+
+.setup__hp-bonus {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--gold-bright);
 }
