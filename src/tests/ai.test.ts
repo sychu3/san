@@ -590,6 +590,32 @@ describe('技能與牌只對合理目標使用', () => {
     expect(groupMemory.rebelScore.get(4)).toBe(1);
   });
 
+  it('主公打誰不算證據（主公沒有其他人拿不到的資訊）', () => {
+    const state = fresh();
+    state.publicEvents = [
+      { seq: 1, kind: 'damage', source: 1, target: 2, amount: 1 },
+      { seq: 2, kind: 'damage', source: 1, target: 3, amount: 1 },
+    ];
+    const memory = createAiMemory();
+    updateMemory(viewFor(state, 0), memory);
+    expect(memory.rebelScore.get(2)).toBeUndefined();
+    expect(memory.rebelScore.get(3)).toBeUndefined();
+  });
+
+  it('死亡公開身份可反推兇手：殺忠臣提高嫌疑、殺反賊降低嫌疑', () => {
+    const state = fresh();
+
+    state.publicEvents = [{ seq: 1, kind: 'death', source: 2, target: 3, role: 'loyal' }];
+    const loyalMemory = createAiMemory();
+    updateMemory(viewFor(state, 0), loyalMemory);
+    expect(loyalMemory.rebelScore.get(2)).toBe(5);
+
+    state.publicEvents = [{ seq: 2, kind: 'death', source: 4, target: 3, role: 'rebel' }];
+    const rebelMemory = createAiMemory();
+    updateMemory(viewFor(state, 0), rebelMemory);
+    expect(rebelMemory.rebelScore.get(4)).toBe(-3);
+  });
+
   it('反賊不會攻擊已明顯曝露的同夥，但仍會打沒有線索的目標', () => {
     const state = fresh();
     state.players[0]!.hand = [card(9700, 'slash', 'spade', 7)];

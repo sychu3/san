@@ -64,15 +64,23 @@ function applyEvent(view: GameView, memory: AiMemory, event: PublicEvent): void 
       event.target,
       event.role === 'rebel' ? 20 : event.role === 'spy' ? 8 : -20,
     );
+    // 死亡時公開的身份，也能反推兇手的陣營：殺了忠臣／主公＝反賊，
+    // 殺了反賊＝不是反賊（這是真正的新資訊，不像「主公打誰」只是雜訊）。
+    if (event.source !== null && event.source !== event.target && event.source !== lordId) {
+      if (event.role === 'loyal' || event.role === 'lord') {
+        bump(memory.rebelScore, event.source, 5);
+      } else if (event.role === 'rebel') {
+        bump(memory.rebelScore, event.source, -3);
+      }
+    }
     return;
   }
 
   if (event.kind === 'damage' && event.source !== null && event.target !== null) {
+    // 傷害主公＝敵意證據。目標一定是活人（身份未公開），所以不必考慮「已知身份」。
     if (event.target === lordId) bump(memory.rebelScore, event.source, 4);
-    const known = memory.knownRole.get(event.target);
-    if (known === 'loyal') bump(memory.rebelScore, event.source, 3);
-    if (known === 'rebel') bump(memory.rebelScore, event.source, -2);
-    if (event.source === lordId) bump(memory.rebelScore, event.target, 3);
+    // 被主公打不算證據：主公沒有任何其他人拿不到的資訊（也用同一套公開事件推理），
+    // 開局更是見誰打誰，把他的目標當嫌疑只是雜訊。
     return;
   }
 
