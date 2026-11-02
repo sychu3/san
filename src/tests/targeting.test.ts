@@ -26,6 +26,18 @@ const HOSTILE_CARDS = new Set<CardName>([
 
 const HOSTILE_SKILLS = new Set(['tuxi', 'fanjian', 'lijian']);
 
+/** 主公第一回合不可用來打未知目標的高成本敵意牌。 */
+const LORD_FIRST_TURN_HIGH_COST = new Set<CardName>([
+  'duel',
+  'dismantle',
+  'snatch',
+  'fire_attack',
+  'indulgence',
+  'supply_shortage',
+  'collateral',
+]);
+const LORD_FIRST_TURN_HIGH_COST_SKILLS = new Set(['fanjian', 'lijian']);
+
 interface Violation {
   seed: number;
   what: string;
@@ -41,6 +53,7 @@ function scan(seeds: number): Violation[] {
     const memories = new Map<PlayerId, AiMemory>();
     const roleOf = (id: PlayerId): Role => state.players[id]!.role!;
     const aliveCount = (): number => state.players.filter((player) => player.alive).length;
+    const lordId = state.players.find((player) => player.role === 'lord')!.id;
 
     const check = (actor: PlayerId, targets: readonly PlayerId[], what: string): void => {
       const actorRole = roleOf(actor);
@@ -59,6 +72,15 @@ function scan(seeds: number): Violation[] {
       }
     };
 
+    const isTeammate = (actor: Role, target: Role): boolean => {
+      if (actor === 'loyal') return target === 'lord';
+      if (actor === 'rebel') return target === 'rebel';
+      if (actor === 'spy') return target === 'lord' && aliveCount() > 2;
+      if (actor === 'lord') return target === 'loyal';
+      return false;
+    };
+
+    let wineUser: PlayerId | null = null;
     let step = generator.next();
     let guard = 0;
     while (!step.done && guard < 200_000) {
@@ -108,6 +130,41 @@ function scan(seeds: number): Violation[] {
               check(request.player, option.asCard === 'collateral' ? targets.slice(1) : targets, `使用【${option.asCard}】`);
             } else if (option.skill && HOSTILE_SKILLS.has(option.skill)) {
               check(request.player, targets, `發動【${option.skill}】`);
+            }
+            // 主公第一回合（主公先手，turnCount 1）只准試探與群體錦囊，不可用酒或高成本單體敵意牌。
+            if (request.player === lordId && state.turnCount === 1) {
+              if (option.asCard === 'wine') {
+                violations.push({ seed, what: '主公第一回合使用【酒】' });
+              }
+              if (option.asCard && LORD_FIRST_TURN_HIGH_COST.has(option.asCard)) {
+                violations.push({ seed, what: `主公第一回合使用高成本【${option.asCard}】` });
+              }
+              if (option.skill && LORD_FIRST_TURN_HIGH_COST_SKILLS.has(option.skill)) {
+                violations.push({ seed, what: `主公第一回合發動【${option.skill}】` });
+              }
+            }
+
+            // 【酒】只可接在打向敵人的【殺】上，不可用來誤傷隊友。
+            if (option.asCard === 'wine') {
+              wineUser = request.player;
+            } else if (
+              wineUser === request.player &&
+              option.asCard !== undefined &&
+              (option.asCard === 'slash' ||
+                option.asCard === 'fire_slash' ||
+                option.asCard === 'thunder_slash')
+            ) {
+              for (const target of targets) {
+                if (target !== request.player && isTeammate(roleOf(request.player), roleOf(target))) {
+                  violations.push({
+                    seed,
+                    what: `酒加在隊友【殺】上（${roleOf(request.player)} -> ${roleOf(target)}）`,
+                  });
+                }
+              }
+              wineUser = null;
+            } else if (wineUser === request.player) {
+              wineUser = null;
             }
           }
         }

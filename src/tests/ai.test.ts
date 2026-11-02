@@ -1098,3 +1098,299 @@ describe('技能與牌只對合理目標使用', () => {
     }
   });
 });
+
+describe('未知目標與酒／裸衣的高置信限制', () => {
+  function actionRequest(player: number, options: PlayOption[]): Request {
+    return {
+      id: 200,
+      player,
+      prompt: '出牌階段：請選擇行動',
+      kind: 'action',
+      options,
+      context: '出牌階段',
+    };
+  }
+
+  function choiceRequest(player: number, skill: string): Request {
+    const option: ResponseOption = {
+      id: skill,
+      label: `${skill}：發動`,
+      kind: 'skill',
+      cards: [],
+      skill,
+    };
+    const pass: ResponseOption = { id: 'pass', label: '不出', kind: 'pass', cards: [] };
+    return {
+      id: 201,
+      player,
+      prompt: '是否發動技能？',
+      kind: 'response',
+      need: 'choice',
+      options: [option, pass],
+      context: skill,
+    };
+  }
+
+  const passOption: PlayOption = {
+    id: 'pass',
+    label: '結束出牌階段',
+    kind: 'pass',
+    cards: [],
+    targets: [],
+  };
+
+  it('【酒】不會加在打向未知目標的【殺】上', () => {
+    const state = fresh();
+    state.players[0]!.role = 'lord';
+    state.players[1]!.role = 'rebel';
+    state.players[0]!.hand = [card(10001, 'slash', 'spade', 7)];
+    state.turn = 0;
+    state.turnCount = 2; // 非第一回合，單獨測酒的高置信判斷
+
+    const slash: PlayOption = {
+      id: 'slash',
+      label: '殺 → 未知目標',
+      kind: 'play',
+      cards: [10001],
+      targets: [1],
+      asCard: 'slash',
+    };
+    const wine: PlayOption = {
+      id: 'wine',
+      label: '酒',
+      kind: 'play',
+      cards: [],
+      targets: [0],
+      asCard: 'wine',
+    };
+    const request = actionRequest(0, [wine, slash, passOption]);
+    state.pending = request;
+    const view = viewFor(state, 0);
+    for (let rngState = 1; rngState <= 30; rngState += 1) {
+      expect(decide(view, request, { rngState })).not.toEqual({
+        type: 'option',
+        optionId: 'wine',
+      });
+    }
+  });
+
+  it('【酒】會加在打向已確認敵人的有效【殺】上', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hand = [card(10002, 'slash', 'heart', 7)];
+    state.players[1]!.role = 'lord';
+    state.players[4]!.role = 'rebel';
+    state.turnCount = 2;
+
+    const slash: PlayOption = {
+      id: 'slash',
+      label: '殺 → 已確認敵人',
+      kind: 'play',
+      cards: [10002],
+      targets: [4],
+      asCard: 'slash',
+    };
+    const wine: PlayOption = {
+      id: 'wine',
+      label: '酒',
+      kind: 'play',
+      cards: [],
+      targets: [0],
+      asCard: 'wine',
+    };
+    const request = actionRequest(0, [wine, slash, passOption]);
+    state.pending = request;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'wine',
+    });
+  });
+
+  it('【酒】不會加在白銀獅子封頂的敵人上', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hand = [card(10003, 'slash', 'heart', 7)];
+    state.players[1]!.role = 'lord';
+    state.players[4]!.role = 'rebel';
+    state.players[4]!.equips.armor = card(10004, 'silver_lion', 'spade', 2);
+    state.turnCount = 2;
+
+    const slash: PlayOption = {
+      id: 'slash',
+      label: '殺 → 白銀獅子敵人',
+      kind: 'play',
+      cards: [10003],
+      targets: [4],
+      asCard: 'slash',
+    };
+    const wine: PlayOption = {
+      id: 'wine',
+      label: '酒',
+      kind: 'play',
+      cards: [],
+      targets: [0],
+      asCard: 'wine',
+    };
+    const request = actionRequest(0, [wine, slash, passOption]);
+    state.pending = request;
+    for (let rngState = 1; rngState <= 30; rngState += 1) {
+      expect(decide(viewFor(state, 0), request, { rngState })).not.toEqual({
+        type: 'option',
+        optionId: 'wine',
+      });
+    }
+  });
+
+  it('【裸衣】不會對未知目標發動，但會在已確認敵人在範圍內時發動', () => {
+    const unknownState = fresh();
+    unknownState.players[0]!.role = 'lord';
+    unknownState.players[1]!.role = 'rebel';
+    unknownState.players[0]!.generalId = 'xu_chu';
+    unknownState.players[0]!.hand = [card(10005, 'slash', 'spade', 7)];
+    unknownState.turn = 0;
+    unknownState.turnCount = 1;
+    const unknownRequest = choiceRequest(0, 'luoyi');
+    unknownState.pending = unknownRequest;
+    expect(decide(viewFor(unknownState, 0), unknownRequest, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    const enemyState = fresh();
+    enemyState.players[0]!.role = 'loyal';
+    enemyState.players[0]!.generalId = 'xu_chu';
+    enemyState.players[0]!.hand = [card(10006, 'slash', 'spade', 7)];
+    enemyState.players[1]!.role = 'lord';
+    enemyState.players[4]!.role = 'rebel';
+    enemyState.turnCount = 2;
+    const enemyRequest = choiceRequest(0, 'luoyi');
+    enemyState.pending = enemyRequest;
+    expect(decide(viewFor(enemyState, 0), enemyRequest, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'luoyi',
+    });
+  });
+
+  it('主公第一回合只試探一張普通【殺】，不用高成本敵意牌', () => {
+    const state = fresh();
+    state.players[0]!.role = 'lord';
+    state.players[1]!.role = 'rebel';
+    state.players[0]!.hand = [card(10007, 'slash', 'spade', 7)];
+    state.turn = 0;
+    state.turnCount = 1;
+
+    const slash: PlayOption = {
+      id: 'slash',
+      label: '殺 → 未知目標',
+      kind: 'play',
+      cards: [10007],
+      targets: [1],
+      asCard: 'slash',
+    };
+    const duel: PlayOption = {
+      id: 'duel',
+      label: '決鬥 → 未知目標',
+      kind: 'play',
+      cards: [],
+      targets: [1],
+      asCard: 'duel',
+    };
+    const dismantle: PlayOption = {
+      id: 'dismantle',
+      label: '拆 → 未知目標',
+      kind: 'play',
+      cards: [],
+      targets: [1],
+      asCard: 'dismantle',
+    };
+    const request = actionRequest(0, [duel, dismantle, slash, passOption]);
+    state.pending = request;
+    const view = viewFor(state, 0);
+    const memory = createAiMemory();
+
+    expect(decide(view, request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash',
+    });
+    // 同一回合第二張未知目標【殺】會被擋掉，只能 pass。
+    expect(decide(view, request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('群體錦囊可能令忠臣死亡時不使用；開局期望值為正時使用', () => {
+    const lethalState = fresh();
+    lethalState.players[0]!.role = 'lord';
+    lethalState.players[1]!.role = 'loyal';
+    lethalState.players[1]!.hp = 1;
+    lethalState.turn = 0;
+    lethalState.turnCount = 1;
+    const lethalAoe: PlayOption = {
+      id: 'barbarian',
+      label: '南蠻入侵',
+      kind: 'play',
+      cards: [],
+      targets: [1, 2, 3, 4],
+      asCard: 'barbarian',
+    };
+    const lethalRequest = actionRequest(0, [lethalAoe, passOption]);
+    lethalState.pending = lethalRequest;
+    expect(decide(viewFor(lethalState, 0), lethalRequest, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    const openState = fresh();
+    openState.players[0]!.role = 'lord';
+    openState.players[1]!.role = 'loyal';
+    openState.turn = 0;
+    openState.turnCount = 1;
+    const openAoe: PlayOption = {
+      id: 'barbarian',
+      label: '南蠻入侵',
+      kind: 'play',
+      cards: [],
+      targets: [1, 2, 3, 4],
+      asCard: 'barbarian',
+    };
+    const openRequest = actionRequest(0, [openAoe, passOption]);
+    openState.pending = openRequest;
+    expect(decide(viewFor(openState, 0), openRequest, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'barbarian',
+    });
+  });
+
+  it('被【借刀殺人】時，不會對藤甲敵人打出無效【殺】', () => {
+    const state = fresh();
+    state.players[0]!.role = 'rebel';
+    state.players[0]!.hand = [card(10008, 'slash', 'spade', 7)];
+    state.players[1]!.role = 'lord';
+    state.players[1]!.equips.armor = card(10009, 'vine_armor', 'spade', 2);
+
+    const play: ResponseOption = {
+      id: 'play',
+      label: '打出',
+      kind: 'respond',
+      cards: [10008],
+      asCard: 'slash',
+    };
+    const pass: ResponseOption = { id: 'pass', label: '不出', kind: 'pass', cards: [] };
+    const request: Request = {
+      id: 202,
+      player: 0,
+      prompt: '是否打出【殺】？',
+      kind: 'response',
+      need: 'sha',
+      options: [play, pass],
+      context: '借刀殺人',
+      targets: [1],
+    };
+    state.pending = request;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+});

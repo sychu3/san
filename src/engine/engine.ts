@@ -927,7 +927,13 @@ export function getPlayOptions(state: GameState, player: PlayerState): PlayOptio
   // 選項只列目標；實際的兩張牌在選定目標後才詢問，避免手牌多時選項平方成長。
   if (player.equips.weapon?.name === 'serpent_spear' && !slashLimitReached(player) && player.hand.length >= 2) {
     for (const target of alive) {
-      if (target.id === player.id || !inAttackRange(state, player.id, target.id)) continue;
+      if (
+        target.id === player.id ||
+        !inAttackRange(state, player.id, target.id) ||
+        targetBlocked(target, 'slash')
+      ) {
+        continue;
+      }
       add({
         id: `slash:serpent_spear:${target.id}:normal`,
         label: `丈八蛇矛：選擇兩張手牌當【殺】→ ${nameOf(state, target.id)}${player.wine ? '［酒 +1］' : ''}`,
@@ -997,6 +1003,7 @@ function* resolvePlayOption(
       2,
       '丈八蛇矛',
       '請選擇兩張手牌當【殺】',
+      { target: option.targets[0] },
     );
     cards = takeFromHand(state, player, ids);
   } else {
@@ -1752,7 +1759,9 @@ function getShaOptions(
   target?: PlayerState,
 ): ResponseOption[] {
   const options: ResponseOption[] = [];
-  if (target && !inAttackRange(state, player.id, target.id)) return options;
+  if (target && (!inAttackRange(state, player.id, target.id) || targetBlocked(target, 'slash'))) {
+    return options;
+  }
   for (const card of player.hand) {
     if (isSlashCard(card.name)) {
       options.push({
@@ -1865,6 +1874,7 @@ function* askForShaSelf(
       2,
       '丈八蛇矛',
       '請選擇兩張手牌當【殺】打出',
+      { target: target?.id },
     );
     cards = takeFromHand(state, player, ids);
   } else {
@@ -2096,9 +2106,14 @@ function* resolveSlashTarget(
   let bonus = extra.bonus ?? 0;
   let noDodge = extra.noDodge ?? false;
   const ignoreArmor = extra.ignoreArmor ?? weapon === 'qinggang';
+  // 防具已可判定此【殺】無效時，不要詢問貫石斧（AI 在回應時看不到【殺】的顏色／屬性）。
+  const armorBlocksSlash =
+    !ignoreArmor &&
+    ((target.equips.armor?.name === 'renwang' && isBlack(use.card)) ||
+      (target.equips.armor?.name === 'vine_armor' && use.nature === 'normal'));
 
   // 貫石斧：使用【殺】時可棄兩張手牌，令此【殺】不可被【閃】抵消且傷害 +1。
-  if (!extra.fromWeapon && weapon === 'rock_axe' && source.hand.length >= 2) {
+  if (!extra.fromWeapon && weapon === 'rock_axe' && source.hand.length >= 2 && !armorBlocksSlash) {
     const chosen = yield* askResponse(
       state,
       source,
@@ -2267,7 +2282,13 @@ function* resolveSlashTarget(
             'play',
             `${nameOf(state, target.id)} 發動【流離】，將【殺】轉移給 ${nameOf(state, newTarget.id)}。`,
           );
-          yield* resolveSlashTarget(state, source, newTarget, use, { ...extra, redirected: true });
+          yield* resolveSlashTarget(state, source, newTarget, use, {
+            ...extra,
+            redirected: true,
+            fromWeapon: true,
+            bonus,
+            noDodge,
+          });
           return;
         }
       }

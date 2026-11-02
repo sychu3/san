@@ -145,6 +145,18 @@ describe('M2 牌堆與虛擬牌', () => {
     expect(spearOptions).toHaveLength(4);
     expect(options.length).toBeLessThan(20);
   });
+
+  it('丈八蛇矛不會把【空城】目標列為選項', () => {
+    const state = fresh();
+    state.players[0]!.equips.weapon = card(9003, 'serpent_spear', 'spade', 12);
+    state.players[0]!.hand = [card(9004, 'dodge', 'heart', 2), card(9005, 'peach', 'heart', 3)];
+    state.players[1]!.generalId = 'zhuge_liang';
+    state.players[1]!.hand = [];
+    const options = getPlayOptions(state, state.players[0]!);
+    expect(options.some((option) => option.skill === 'serpent_spear' && option.targets[0] === 1)).toBe(
+      false,
+    );
+  });
 });
 
 describe('即時錦囊', () => {
@@ -577,6 +589,35 @@ describe('八把武器', () => {
     );
     expect(state.players[1]!.hp).toBe(3);
     expect(handOf(state, 0)).toHaveLength(2);
+  });
+
+  it('貫石斧不會對藤甲普通【殺】詢問（避免浪費兩張手牌）', () => {
+    const state = fresh();
+    state.players[0]!.equips.weapon = card(235, 'rock_axe', 'diamond', 5);
+    state.players[0]!.hand = [
+      card(236, 'slash', 'spade', 8),
+      card(237, 'dodge', 'heart', 2),
+      card(238, 'peach', 'heart', 5),
+    ];
+    state.players[1]!.equips.armor = card(239, 'vine_armor', 'spade', 2);
+    let sawRockAxe = false;
+    playAction(
+      state,
+      0,
+      (option) => option.asCard === 'slash' && option.targets[0] === 1,
+      (request) => {
+        if (
+          request.kind === 'response' &&
+          request.need === 'choice' &&
+          request.options.some((option) => option.skill === 'rock_axe')
+        ) {
+          sawRockAxe = true;
+        }
+        return baseline(request);
+      },
+    );
+    expect(sawRockAxe).toBe(false);
+    expect(state.players[1]!.hp).toBe(5); // 普通殺被藤甲無效
   });
 
   it('青龍偃月刀被閃抵消後可再使用一張殺', () => {

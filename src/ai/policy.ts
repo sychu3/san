@@ -3,8 +3,10 @@ import type {
   CardName,
   Difficulty,
   GameView,
+  Nature,
   PlayerId,
   PlayerView,
+  PlayOption,
   PublicEvent,
   Request,
   Response,
@@ -38,6 +40,11 @@ export interface AiMemory {
   /** 公開的【仁德】事件對各來源的信念影響總量（每回合上限）。 */
   giveTurn: number;
   giveDelta: Map<PlayerId, number>;
+  /** 主公第一回合用過的試探【殺】；同回合只准一張。 */
+  probeTurn: number;
+  probeUsed: boolean;
+  /** 本回合是否發動過【裸衣】（自己決定，之後用來估算傷害）。 */
+  luoyiTurn: number;
 }
 
 export function createAiMemory(): AiMemory {
@@ -51,6 +58,9 @@ export function createAiMemory(): AiMemory {
     rendeGiven: 0,
     giveTurn: -1,
     giveDelta: new Map(),
+    probeTurn: -1,
+    probeUsed: false,
+    luoyiTurn: -1,
   };
 }
 
@@ -252,6 +262,146 @@ function relationOf(view: GameView, self: PlayerView, target: PlayerView): Relat
   return 'unknown';
 }
 
+/**
+ * 公開資訊是否足以斷定目標是敵人。
+ * 未知不當敵人，也不當隊友；但固定 5 人標準局下，忠臣／內奸可由角色組成
+ * 斷定「其他未知非主公」必為敵方（忠臣只有主公是隊友；內奸只有主公，
+ * 而且主公要後期才變成敵人）。主公／反賊則只認有公開證據的敵人。
+ */
+function isConfirmedEnemy(view: GameView, self: PlayerView, target: PlayerView): boolean {
+  if (target.id === self.id || !target.alive) return false;
+  const relation = relationOf(view, self, target);
+  if (relation === 'enemy') return true;
+  if (relation === 'ally') return false;
+  if (self.role === 'loyal' || self.role === 'spy') return target.role !== 'lord';
+  return false;
+}
+
+function isBlackCard(card: Card): boolean {
+  return card.suit === 'spade' || card.suit === 'club';
+}
+
+function isRedCard(card: Card): boolean {
+  return card.suit === 'heart' || card.suit === 'diamond';
+}
+
+function slashNature(name: CardName): Nature {
+  if (name === 'fire_slash') return 'fire';
+  if (name === 'thunder_slash') return 'thunder';
+  return 'normal';
+}
+
+function isSlashOption(option: { asCard?: CardName }): boolean {
+  return option.asCard === 'slash' || option.asCard === 'fire_slash' || option.asCard === 'thunder_slash';
+}
+
+function handCardById(self: PlayerView, id: number): Card | null {
+  return (self.hand ?? []).find((card) => card.id === id) ?? null;
+}
+
+/** 【殺】是否會被目標的防具或【空城】直接無效。 */
+function slashIsEffective(
+  self: PlayerView,
+  target: PlayerView,
+  option: { asCard?: CardName; nature?: Nature; cards?: number[]; skill?: string },
+): boolean {
+  if (!target.alive || target.id === self.id) return false;
+  if (target.skills.includes('kongcheng') && target.handCount === 0) return false;
+  const name = option.asCard ?? 'slash';
+  const nature = option.nature ?? slashNature(name);
+  const ignoreArmor = self.equips.weapon?.name === 'qinggang';
+  if (ignoreArmor) return true;
+  const armor = target.equips.armor?.name;
+  if (armor === 'renwang') {
+    if (option.skill === 'serpent_spear') {
+      const hand = self.hand ?? [];
+      return hand.length >= 2 && hand.some(isRedCard);
+    }
+    const physical = (option.cards ?? [])
+      .map((id) => handCardById(self, id))
+      .find((card): card is Card => Boolean(card));
+    return physical !== undefined && !isBlackCard(physical);
+  }
+  if (armor === 'vine_armor') return nature === 'fire';
+  return true;
+}
+
+/** 【殺】的基礎傷害（未計酒／裸衣）。 */
+function slashBaseDamage(self: PlayerView, target: PlayerView, option: { asCard?: CardName }): number {
+  let damage = 1;
+  const ignoreArmor = self.equips.weapon?.name === 'qinggang';
+  if (!ignoreArmor && option.asCard === 'fire_slash' && target.equips.armor?.name === 'vine_armor') {
+    damage += 1;
+  }
+  return damage;
+}
+
+/** 連同酒／裸衣與白銀獅子封頂後的實際傷害。 */
+function slashDamageWith(
+  self: PlayerView,
+  target: PlayerView,
+  option: { asCard?: CardName },
+  bonus: { wine: boolean; luoyi: boolean },
+): number {
+  let damage = slashBaseDamage(self, target, option);
+  if (bonus.wine) damage += 1;
+  if (bonus.luoyi) damage += 1;
+  const ignoreArmor = self.equips.weapon?.name === 'qinggang';
+  if (!ignoreArmor && target.equips.armor?.name === 'silver_lion' && damage > 1) damage = 1;
+  return damage;
+}
+
+/** 加酒／裸衣是否真的令傷害提升（白銀獅子封頂時不會）。 */
+function slashBonusMatters(
+  self: PlayerView,
+  target: PlayerView,
+  option: { asCard?: CardName; nature?: Nature; cards?: number[]; skill?: string },
+  bonus: { wine: boolean; luoyi: boolean },
+): boolean {
+  if (!slashIsEffective(self, target, option)) return false;
+  const base = slashDamageWith(self, target, option, { wine: false, luoyi: false });
+  const boosted = slashDamageWith(self, target, option, bonus);
+  // 加傷要真的提升傷害，而且目標不是本來就會被基礎傷害帶走。
+  return boosted > base && target.hp > base;
+}
+
+/** 目標是否全部都是公開資訊足以斷定的敵人。 */
+function targetsAllConfirmed(
+  view: GameView,
+  self: PlayerView,
+  option: { targets: PlayerId[] },
+): boolean {
+  if (option.targets.length === 0) return false;
+  return option.targets.every((id) => {
+    const player = view.players[id];
+    return Boolean(player) && player!.id !== self.id && isConfirmedEnemy(view, self, player!);
+  });
+}
+
+/** 回應請求（借刀、激將）時，判斷一個【殺】回應選項是否對目標有效。 */
+function responseSlashEffective(
+  self: PlayerView,
+  target: PlayerView,
+  option: { asCard?: CardName; nature?: Nature; cards: number[]; skill?: string },
+): boolean {
+  if (option.skill === 'serpent_spear') {
+    return slashIsEffective(self, target, {
+      asCard: 'slash',
+      nature: 'normal',
+      cards: [],
+      skill: 'serpent_spear',
+    });
+  }
+  const asCard = option.asCard;
+  if (asCard !== 'slash' && asCard !== 'fire_slash' && asCard !== 'thunder_slash') return false;
+  return slashIsEffective(self, target, {
+    asCard,
+    nature: option.nature ?? slashNature(asCard),
+    cards: option.cards,
+    skill: option.skill,
+  });
+}
+
 function roleEnemyScore(view: GameView, self: PlayerView, target: PlayerView): number {
   if (target.id === self.id || !target.alive) return -1;
   let base: number;
@@ -286,7 +436,7 @@ function hasTuxiTarget(view: GameView, self: PlayerView): boolean {
       player.alive &&
       player.id !== self.id &&
       player.handCount > 0 &&
-      roleEnemyScore(view, self, player) > 0,
+      isConfirmedEnemy(view, self, player),
   );
 }
 
@@ -353,10 +503,108 @@ function isSlashName(name: CardName): boolean {
 /** 放在判定區的延時錦囊：移掉會讓持有者變好，拆敵人時反而是幫對方。 */
 const JUDGE_TIME_TRICKS = new Set<CardName>(['indulgence', 'supply_shortage', 'lightning']);
 
+/**
+ * 需要投入多張資源或高風險的單體敵意牌。這類牌在目標未確定是敵人時不用，
+ * 避免把資源花在潛在隊友身上。
+ */
+const HIGH_COST_SINGLE = new Set<CardName>([
+  'duel',
+  'dismantle',
+  'snatch',
+  'fire_attack',
+  'indulgence',
+  'supply_shortage',
+  'collateral',
+]);
+
+const HIGH_COST_SKILLS = new Set(['fanjian', 'lijian']);
+
+function isHighCostHostile(option: { asCard?: CardName; skill?: string }): boolean {
+  if (option.asCard && HIGH_COST_SINGLE.has(option.asCard)) return true;
+  if (option.skill && HIGH_COST_SKILLS.has(option.skill)) return true;
+  return false;
+}
+
+function isLordFirstTurn(view: GameView, self: PlayerView): boolean {
+  return self.role === 'lord' && view.turnCount === 1;
+}
+
+/** 主公第一回合只准一張「普通」試探【殺】：單一目標、只用一張手牌。 */
+function isPlainSlashOption(option: PlayOption): boolean {
+  return isSlashOption(option) && option.cards.length === 1 && option.targets.length === 1;
+}
+
+function canLordProbe(view: GameView, self: PlayerView, option: PlayOption): boolean {
+  if (!isLordFirstTurn(view, self)) return false;
+  if (activeMemory?.probeUsed) return false;
+  if (!isPlainSlashOption(option)) return false;
+  const targetId = option.targets[0];
+  if (targetId === undefined) return false;
+  const target = view.players[targetId];
+  if (!target || target.id === self.id) return false;
+  if (!viewInAttackRange(view, self, target)) return false;
+  if (isConfirmedEnemy(view, self, target)) return false;
+  return slashIsEffective(self, target, option);
+}
+
+/** 固定 5 人標準局的剩餘各身份數。 */
+function remainingRoleCounts(view: GameView, self: PlayerView): Record<Role, number> {
+  const counts: Record<Role, number> = { lord: 1, loyal: 1, rebel: 2, spy: 1 };
+  for (const player of view.players) {
+    const known =
+      player.id === self.id
+        ? self.role
+        : player.role ?? activeMemory?.knownRole.get(player.id) ?? null;
+    if (known) counts[known] = Math.max(0, counts[known] - 1);
+  }
+  return counts;
+}
+
+/** 對未知目標估算「是隊友」的機率；已知身份直接用 0 或 1。 */
+function unknownAllyProbability(view: GameView, self: PlayerView, target: PlayerView): number {
+  const relation = relationOf(view, self, target);
+  if (relation === 'ally') return 1;
+  if (relation === 'enemy') return 0;
+  const counts = remainingRoleCounts(view, self);
+  const total = counts.lord + counts.loyal + counts.rebel + counts.spy;
+  if (total <= 0) return 0;
+  if (self.role === 'lord') return counts.loyal / total;
+  if (self.role === 'rebel') return counts.rebel / total;
+  return 0;
+}
+
+/**
+ * 群體錦囊的期望值：對敵人造成傷害為正，對潛在隊友造成傷害為負；
+ * 若可能直接令忠臣死亡，給極大負值。藤甲對南蠻／萬箭免疫，直接跳過。
+ */
+function aoeScore(view: GameView, self: PlayerView, option: PlayOption): number {
+  let ev = 0;
+  let effective = 0;
+  for (const id of option.targets) {
+    const target = view.players[id];
+    if (!target || target.id === self.id || !target.alive) continue;
+    if (target.equips.armor?.name === 'vine_armor') continue;
+    effective += 1;
+    const lethal = target.hp <= 1;
+    const ally = unknownAllyProbability(view, self, target);
+    const enemy = 1 - ally;
+    ev += enemy * (lethal ? 60 : 12) + ally * (lethal ? -400 : -20);
+  }
+  if (effective === 0) return -100;
+  if (ev <= 0) return -80 + ev;
+  return 42 + ev * 1.2;
+}
+
 function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng: RngState): Response {
   const self = selfOf(view);
   const options = request.options;
   let best: { id: string; score: number } | null = null;
+
+  // 每個回合重置主公第一回合的試探【殺】標記。
+  if (activeMemory && activeMemory.probeTurn !== view.turnCount) {
+    activeMemory.probeTurn = view.turnCount;
+    activeMemory.probeUsed = false;
+  }
 
   const slashOptions = options.filter(
     (option) => option.asCard === 'slash' || option.asCard === 'fire_slash' || option.asCard === 'thunder_slash',
@@ -369,6 +617,22 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
     let score = 0;
     const target = option.targets[0] === undefined ? null : view.players[option.targets[0]] ?? null;
 
+    if (option.kind === 'play') {
+      // 主公所有回合：高成本單體敵意牌只打公開資訊足以斷定的敵人。
+      if (self.role === 'lord' && isHighCostHostile(option) && !targetsAllConfirmed(view, self, option)) {
+        continue;
+      }
+      // 主公第一回合：普通【殺】最多一張試探；其他敵意牌只打 confirmed。
+      if (
+        isLordFirstTurn(view, self) &&
+        isSlashOption(option) &&
+        !targetsAllConfirmed(view, self, option) &&
+        !canLordProbe(view, self, option)
+      ) {
+        continue;
+      }
+    }
+
     switch (option.kind) {
       case 'pass': {
         // 有明確敵人時，空過有一點成本；只有未知或隊友時，保留手牌較好。
@@ -376,7 +640,7 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
           (player) =>
             player.alive &&
             player.id !== self.id &&
-            relationOf(view, self, player) === 'enemy',
+            isConfirmedEnemy(view, self, player),
         );
         const hasUnknown = view.players.some(
           (player) =>
@@ -401,14 +665,21 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
 
       if (name === 'ex_nihilo') score += 80;
       if (name === 'wine') {
-        // 【酒】只有在本回合真的能接上【殺】時才用；而且要排在【殺】前面，
-        // 否則【殺】先打出去之後，酒就完全沒有價值了。
-        const canFollow = slashOptions.some((option) =>
-          option.targets.some((id) => {
-            const player = view.players[id];
-            return Boolean(player) && relationOf(view, self, player) !== 'ally';
-          }),
-        );
+        // 【酒】只加在「所有目標都是已確認敵人、而且加傷真的有效」的【殺】上，
+        // 避免加在未知目標身上誤傷潛在隊友。酒必須排在【殺】前面。
+        const canFollow = slashOptions.some((slashOption) => {
+          const targets = slashOption.targets
+            .map((id) => view.players[id])
+            .filter((player): player is PlayerView => Boolean(player));
+          if (targets.length === 0) return false;
+          if (!targetsAllConfirmed(view, self, slashOption)) return false;
+          return targets.some(
+            (player) =>
+              player.id !== self.id &&
+              viewInAttackRange(view, self, player) &&
+              slashBonusMatters(self, player, slashOption, { wine: true, luoyi: false }),
+          );
+        });
         score += canFollow ? 120 : -35;
       }
       if (name === 'peach') {
@@ -454,17 +725,21 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
         }
       }
       if (name === 'barbarian' || name === 'arrows') {
-        const allies = option.targets.filter(
-          (id) => id !== self.id && relationOf(view, self, view.players[id]!) === 'ally',
-        );
-        score += 42 + option.targets.length * 5 - allies.length * 160;
+        // 群體錦囊用期望值：對敵人有利、對潛在隊友有害；可能令忠臣死亡時不應使用。
+        score += aoeScore(view, self, option);
       }
       if (name === 'peach_garden') {
-        const net = option.targets.reduce((sum, id) => {
+        let allyHeal = 0;
+        let enemyHeal = 0;
+        let unknownHeal = 0;
+        for (const id of option.targets) {
           const player = view.players[id];
-          if (!player || player.hp >= player.maxHp) return sum;
+          if (!player || player.hp >= player.maxHp) continue;
           const relation = relationOf(view, self, player);
-          if (relation === 'enemy') return sum - 18;
+          if (relation === 'enemy') {
+            enemyHeal += 1;
+            continue;
+          }
           if (relation === 'ally') {
             // 內奸不把主公治療到中低血量之上。
             if (
@@ -472,13 +747,16 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
               player.role === 'lord' &&
               player.hp >= Math.max(2, Math.ceil(player.maxHp / 2))
             ) {
-              return sum;
+              continue;
             }
-            return sum + 18;
+            allyHeal += 1;
+            continue;
           }
-          return sum;
-        }, 0);
-        score += 30 + net;
+          unknownHeal += 1;
+        }
+        // 沒有治療到任何隊友（全滿、只治療敵人／未知）就不要用。
+        if (allyHeal === 0) score -= 80;
+        else score += 30 + allyHeal * 18 - enemyHeal * 18 - unknownHeal * 6;
       }
       if (name === 'harvest') score += 55;
       if (name === 'collateral') {
@@ -524,10 +802,11 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
           }
         }
       }
-      if (name === 'slash' || name === 'fire_slash' || name === 'thunder_slash') {
-        // 方天畫戟等可指定多個目標：逐一檢查，打到隊友要重罰。
+      if (isSlashOption(option)) {
+        // 方天畫戟等可指定多個目標：逐一檢查，打到隊友或無效目標要重罰。
         let hostileTargets = 0;
         let friendlyTargets = 0;
+        let invalidTarget = false;
         for (const id of option.targets) {
           const player = view.players[id];
           if (!player) continue;
@@ -536,22 +815,29 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
             friendlyTargets += 1;
             continue;
           }
+          if (!slashIsEffective(self, player, option)) {
+            invalidTarget = true;
+            break;
+          }
           hostileTargets += 1;
-          const damage = 1 + (self.wine ? 1 : 0);
+          const damage = slashDamageWith(self, player, option, {
+            wine: self.wine,
+            luoyi: Boolean(activeMemory && activeMemory.luoyiTurn === view.turnCount),
+          });
           score += 40 + enemy * 0.25;
           if (player.hp <= damage) score += 70;
           if (player.handCount === 0) score += 12;
-          if (player.equips.armor?.name === 'vine_armor') {
-            score += name === 'fire_slash' ? 25 : name === 'slash' ? -30 : 0;
-          }
-          if (player.equips.armor?.name === 'renwang') score -= 15;
+          if (player.equips.armor?.name === 'vine_armor' && name === 'fire_slash') score += 25;
           // 高手：對手已公開打出多張【閃】，推測其手上【閃】變少。
           if (activeDifficulty === 'hard') {
             score += (activeMemory?.playedDodge.get(player.id) ?? 0) * 3;
           }
         }
-        if (hostileTargets === 0) score -= 80;
+        // 公開資訊已可判定無效，或打不到任何敵人：不要浪費這張【殺】。
+        if (invalidTarget || hostileTargets === 0) score -= 300;
         score -= friendlyTargets * 300;
+        // 酒已用時，下一個【殺】只打已確認敵人，避免酒被未知目標搶走。
+        if (self.wine) score += targetsAllConfirmed(view, self, option) ? 60 : -400;
         // 有實體【殺】時優先使用，不要把兩張手牌浪費在丈八蛇矛上。
         if (option.skill === 'serpent_spear' && (self.hand ?? []).some((card) => isSlashName(card.name))) {
           score -= 45;
@@ -589,10 +875,12 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       } else if (option.skill === 'lijian') {
         const secondId = option.targets[1];
         const second = secondId === undefined ? null : view.players[secondId] ?? null;
-        const secondEnemy = second ? roleEnemyScore(view, self, second) : 0;
-        score += firstEnemy >= 0 && secondEnemy >= 0 && (firstEnemy > 0 || secondEnemy > 0) ? 35 : -20;
+        // 離間會令兩人互相決鬥；只可指定兩名已確認敵人，避免隊友受傷。
+        score += first && second && isConfirmedEnemy(view, self, first) && isConfirmedEnemy(view, self, second)
+          ? 35
+          : -20;
       } else if (option.skill === 'fanjian') {
-        score += firstEnemy > 0 ? 40 : -30;
+        score += first && isConfirmedEnemy(view, self, first) ? 40 : -30;
       } else if (option.skill === 'jieyin') {
         // 結姻會同時回復自己與目標；幫敵人回體力是嚴重錯誤。
         if (firstEnemy > 0 && first && first.id !== self.id) {
@@ -622,6 +910,13 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
 
     score += jitter(rng);
     if (!best || score > best.score) best = { id: option.id, score };
+  }
+
+  if (best && best.score > 0) {
+    const chosen = options.find((option) => option.id === best!.id);
+    if (chosen && canLordProbe(view, self, chosen) && activeMemory) {
+      activeMemory.probeUsed = true;
+    }
   }
 
   if (!best || best.score <= 0) {
@@ -905,6 +1200,96 @@ function equipPlan(view: GameView, self: PlayerView, card: Card): number {
   return score;
 }
 
+/** 用自己手牌／技能建立可能的【殺】候選，供【裸衣】判斷本回合是否打得出有效傷害。 */
+function handSlashCandidates(self: PlayerView): PlayOption[] {
+  const options: PlayOption[] = [];
+  const hand = self.hand ?? [];
+  for (const card of hand) {
+    if (!isSlashName(card.name)) continue;
+    options.push({
+      id: `cand:${card.id}`,
+      label: '',
+      kind: 'play',
+      cards: [card.id],
+      targets: [],
+      asCard: card.name,
+      nature: slashNature(card.name),
+    });
+  }
+  if (self.skills.includes('wusheng')) {
+    for (const card of hand) {
+      if (isSlashName(card.name) || !isRedCard(card)) continue;
+      options.push({
+        id: `cand:wusheng:${card.id}`,
+        label: '',
+        kind: 'play',
+        cards: [card.id],
+        targets: [],
+        asCard: 'slash',
+        nature: 'normal',
+        skill: 'wusheng',
+      });
+    }
+  }
+  if (self.skills.includes('longdan')) {
+    for (const card of hand) {
+      if (card.name !== 'dodge') continue;
+      options.push({
+        id: `cand:longdan:${card.id}`,
+        label: '',
+        kind: 'play',
+        cards: [card.id],
+        targets: [],
+        asCard: 'slash',
+        nature: 'normal',
+        skill: 'longdan',
+      });
+    }
+  }
+  if (self.equips.weapon?.name === 'serpent_spear' && hand.length >= 2) {
+    options.push({
+      id: 'cand:spear',
+      label: '',
+      kind: 'play',
+      cards: [],
+      targets: [],
+      asCard: 'slash',
+      nature: 'normal',
+      skill: 'serpent_spear',
+    });
+  }
+  return options;
+}
+
+/**
+ * 【裸衣】只對已確認敵人發動，而且加傷要真的有效（不是打不中、不是白銀獅子封頂、
+ * 不是本來就會被基礎傷害帶走）。有【決鬥】＋【殺】時也可因決鬥增傷而發動。
+ */
+function luoyiHasValue(view: GameView, self: PlayerView): boolean {
+  const enemies = view.players.filter(
+    (player) => player.alive && player.id !== self.id && isConfirmedEnemy(view, self, player),
+  );
+  if (enemies.length === 0) return false;
+  const candidates = handSlashCandidates(self);
+  if (candidates.length === 0) return false;
+
+  for (const enemy of enemies) {
+    if (!viewInAttackRange(view, self, enemy)) continue;
+    for (const candidate of candidates) {
+      if (slashBonusMatters(self, enemy, candidate, { wine: false, luoyi: true })) return true;
+    }
+  }
+
+  const hasDuel = (self.hand ?? []).some((card) => card.name === 'duel');
+  if (!hasDuel) return false;
+  const ignoreArmor = self.equips.weapon?.name === 'qinggang';
+  return enemies.some(
+    (enemy) =>
+      !(enemy.skills.includes('kongcheng') && enemy.handCount === 0) &&
+      (ignoreArmor || enemy.equips.armor?.name !== 'silver_lion'),
+  );
+}
+
 function chooseResponse(
   view: GameView,
   request: Request & { kind: 'response' },
@@ -950,13 +1335,27 @@ function chooseResponse(
   }
 
   if (request.need === 'sha') {
-    // 激將：蜀勢力角色代主公打出【殺】。若借用者或被打的目標對自己不利，拒絕。
+    // 激將：蜀勢力角色代主公打出【殺】。若借用者對自己不利，拒絕。
     if (isEnemyOf(view, self, request.source)) {
       return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
     }
-    // 【借刀殺人】等情況會指定受害者：被逼著打自己或隊友時寧可放棄（棄武器）。
-    const victim = request.targets?.[0];
-    if (victim !== undefined && (victim === self.id || !isEnemyOf(view, self, victim))) {
+    // 【借刀殺人】等情況會指定受害者：只打已確認敵人，且沒有有效【殺】時
+    // 寧可放棄（把武器交出去），也不要把【殺】打在潛在隊友或無效的防具上。
+    const victimId = request.targets?.[0];
+    if (victimId !== undefined) {
+      const victim = view.players[victimId] ?? null;
+      if (victim === null || victimId === self.id || !isConfirmedEnemy(view, self, victim)) {
+        return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+      }
+      const effective = options.filter((option) => responseSlashEffective(self, victim, option));
+      const slash =
+        effective.find(
+          (option) =>
+            option.asCard === 'slash' ||
+            option.asCard === 'fire_slash' ||
+            option.asCard === 'thunder_slash',
+        ) ?? effective.find((option) => option.skill === 'serpent_spear');
+      if (slash) return { type: 'option', optionId: slash.id };
       return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
     }
     const slash =
@@ -1028,11 +1427,27 @@ function chooseResponse(
       if (id === 'tuxi' && !hasTuxiTarget(view, self)) {
         return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
       }
-      if (id === 'luoyi' && !(self.hand ?? []).some((card) => isSlashName(card.name))) {
-        return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+      if (id === 'luoyi') {
+        if (!luoyiHasValue(view, self)) {
+          return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+        }
+        if (activeMemory) activeMemory.luoyiTurn = view.turnCount;
+        return { type: 'option', optionId: skill.id };
       }
-      if (id === 'rock_axe' && self.handCount < 2 && pass) {
-        return { type: 'option', optionId: pass.id };
+      if (id === 'rock_axe') {
+        if (self.handCount < 2) {
+          return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+        }
+        const axeTargetId = skill.targets?.[0];
+        const axeTarget = axeTargetId === undefined ? null : view.players[axeTargetId] ?? null;
+        // 白銀獅子會把 +1 傷害封頂，沒有青釭劍時不值得棄兩張牌。
+        if (axeTarget?.equips.armor?.name === 'silver_lion' && self.equips.weapon?.name !== 'qinggang') {
+          return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+        }
+        // 主公第一回合不要把額外資源灌在未知目標上。
+        if (isLordFirstTurn(view, self) && axeTarget && !isConfirmedEnemy(view, self, axeTarget)) {
+          return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+        }
       }
       return { type: 'option', optionId: skill.id };
     }
@@ -1142,6 +1557,22 @@ function chooseCards(
     return { type: 'cards', cards: sorted.slice(0, count) };
   }
 
+  // 丈八蛇矛：對手有仁王盾時，盡量把紅色牌排在前面（第一張決定顏色）。
+  if (request.reason === '丈八蛇矛' && request.target !== undefined) {
+    const target = view.players[request.target] ?? null;
+    const ignoreArmor = self.equips.weapon?.name === 'qinggang';
+    if (target && !ignoreArmor && target.equips.armor?.name === 'renwang') {
+      const isRedId = (id: number): boolean => {
+        const card = hand.find((item) => item.id === id);
+        return card !== undefined && isRedCard(card);
+      };
+      const reds = sorted.filter(isRedId);
+      const blacks = sorted.filter((id) => !isRedId(id));
+      const picked = [...reds, ...blacks].slice(0, Math.min(2, maxAvailable));
+      return { type: 'cards', cards: picked };
+    }
+  }
+
   const count = Math.max(min, Math.min(maxAvailable, request.max));
   return { type: 'cards', cards: sorted.slice(0, count) };
 }
@@ -1165,7 +1596,7 @@ function chooseCard(
   const enemy = roleEnemyScore(view, self, target);
   const preferred = visible
     .filter((card) => request.cards.includes(card.id))
-    .map((card) => ({ card, score: removalScore(card, enemy) }))
+    .map((card) => ({ card, score: removalScore(card, enemy, target) }))
     .sort((a, b) => b.score - a.score);
 
   if (preferred.length > 0) {
@@ -1184,11 +1615,14 @@ function chooseCard(
 }
 
 /** 拆／拿目標區域內一張牌的價值；負分代表做了反而幫到對方。 */
-function removalScore(card: Card, enemy: number): number {
+function removalScore(card: Card, enemy: number, target: PlayerView): number {
   const meta = CARD_META[card.name];
   if (meta.type === 'equip') {
     // 拆敵人的裝備是好事，拆隊友的裝備是壞事。
-    return equipPriority(card) + (enemy > 0 ? 4 : -6);
+    let score = equipPriority(card) + (enemy > 0 ? 4 : -6);
+    // 白銀獅子被拆掉時持有者會回復 1 點；對方已受傷時，拆它反而治療敵人。
+    if (card.name === 'silver_lion' && enemy > 0 && target.hp < target.maxHp) score -= 30;
+    return score;
   }
   if (JUDGE_TIME_TRICKS.has(card.name)) {
     // 判定區的延時錦囊移掉會讓持有者變好。
@@ -1258,14 +1692,15 @@ export function decide(
             enemy: roleEnemyScore(view, self, player),
             relation: relationOf(view, self, player),
             handCount: player.handCount,
+            confirmed: isConfirmedEnemy(view, self, player),
           },
         ];
       });
       const enemies = scored
-        .filter((item) => item.enemy > 0)
+        .filter((item) => item.confirmed)
         .sort((a, b) => b.enemy - a.enemy || b.handCount - a.handCount);
       const rest = scored
-        .filter((item) => item.enemy <= 0)
+        .filter((item) => !item.confirmed)
         .sort(
           (a, b) =>
             relationRank[a.relation] - relationRank[b.relation] || b.handCount - a.handCount,
