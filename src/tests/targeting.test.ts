@@ -22,6 +22,8 @@ const HOSTILE_CARDS = new Set<CardName>([
   'supply_shortage',
   'collateral',
   'iron_chain',
+  'barbarian',
+  'arrows',
 ]);
 
 const HOSTILE_SKILLS = new Set(['tuxi', 'fanjian', 'lijian']);

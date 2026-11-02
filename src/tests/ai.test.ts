@@ -271,10 +271,10 @@ describe('AI 拆牌判斷', () => {
     state.pending = request;
     const view = viewFor(state, 0);
 
-    // 沒有死亡資訊時，反賊無法確定對方是隊友，仍可能決鬥。
+    // 未知目標不再當敵人：未有死亡資訊時，反賊也不會用【決鬥】賭隊友。
     expect(decide(view, request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
       type: 'option',
-      optionId: 'duel:ally',
+      optionId: 'pass',
     });
 
     // 忠臣與內奸都已公開死亡 → 其他存活非主公角色必為反賊，不攻擊。
@@ -1389,6 +1389,132 @@ describe('未知目標與酒／裸衣的高置信限制', () => {
     };
     state.pending = request;
     expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+});
+
+describe('反賊焦點與主公保護', () => {
+  const passOption: PlayOption = {
+    id: 'pass',
+    label: '結束出牌階段',
+    kind: 'pass',
+    cards: [],
+    targets: [],
+  };
+
+  function actionRequest(player: number, options: PlayOption[]): Request {
+    return {
+      id: 300,
+      player,
+      prompt: '出牌階段：請選擇行動',
+      kind: 'action',
+      options,
+      context: '出牌階段',
+    };
+  }
+
+  it('第一個反賊死亡後，剩餘反賊會把其他非主公當成確定敵人', () => {
+    const state = fresh();
+    state.players.forEach((player, index) => {
+      player.hand = [];
+      player.hp = 4;
+      player.maxHp = 4;
+      player.alive = index !== 4;
+      player.role = index === 0 ? 'rebel' : index === 1 ? 'lord' : index === 4 ? 'rebel' : 'loyal';
+    });
+    const duel: PlayOption = {
+      id: 'duel:unknown',
+      label: '決鬥 → 未知目標',
+      kind: 'play',
+      cards: [],
+      targets: [2],
+      asCard: 'duel',
+    };
+    const request = actionRequest(0, [duel, passOption]);
+    state.pending = request;
+
+    // 未有死亡資訊時，未知目標不是確定敵人，不用【決鬥】賭隊友。
+    state.publicEvents = [];
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory())).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    // 一名反賊公開死亡後，自己就是唯一反賊，其他非主公必為敵人。
+    state.publicEvents = [{ seq: 1, kind: 'death', source: null, target: 4, role: 'rebel' }];
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory())).toEqual({
+      type: 'option',
+      optionId: 'duel:unknown',
+    });
+  });
+
+  it('反賊會用【桃】救公開可辨認的隊友，但不會救未知目標', () => {
+    const state = fresh();
+    state.players[0]!.role = 'rebel';
+    state.players[2]!.role = 'rebel';
+    state.players[2]!.alive = true;
+    state.players[2]!.hp = 0;
+    state.players[0]!.hand = [card(9500, 'peach', 'heart', 3)];
+
+    const play: ResponseOption = {
+      id: 'peach',
+      label: '桃',
+      kind: 'respond',
+      cards: [9500],
+      asCard: 'peach',
+    };
+    const pass: ResponseOption = { id: 'pass', label: '不出', kind: 'pass', cards: [] };
+    const request: Request = {
+      id: 301,
+      player: 0,
+      prompt: '是否使用【桃】？',
+      kind: 'response',
+      need: 'peach',
+      options: [play, pass],
+      context: '瀕死',
+    };
+    state.pending = request;
+
+    const memory = createAiMemory();
+    memory.knownRole.set(2, 'rebel');
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory)).toEqual({
+      type: 'option',
+      optionId: 'peach',
+    });
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory())).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('忠臣與內奸在還有其他人時，不會用群體錦囊傷害主公', () => {
+    const aoe: PlayOption = {
+      id: 'barbarian',
+      label: '南蠻入侵',
+      kind: 'play',
+      cards: [],
+      targets: [1, 2, 3, 4],
+      asCard: 'barbarian',
+    };
+
+    const spyState = fresh();
+    spyState.players[0]!.role = 'spy';
+    spyState.players[1]!.role = 'lord';
+    const spyRequest = actionRequest(0, [aoe, passOption]);
+    spyState.pending = spyRequest;
+    expect(decide(viewFor(spyState, 0), spyRequest, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    const loyalState = fresh();
+    loyalState.players[0]!.role = 'loyal';
+    loyalState.players[1]!.role = 'lord';
+    const loyalRequest = actionRequest(0, [aoe, passOption]);
+    loyalState.pending = loyalRequest;
+    expect(decide(viewFor(loyalState, 0), loyalRequest, { rngState: 1 })).toEqual({
       type: 'option',
       optionId: 'pass',
     });

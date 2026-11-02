@@ -409,7 +409,15 @@ function roleEnemyScore(view: GameView, self: PlayerView, target: PlayerView): n
     if (target.role === 'lord') return 100;
     // 已能推斷是反賊隊友時，不攻擊（例如只剩自己、另一名反賊與主公）。
     if (deducedRebelAlly(self, view, target)) return -60;
-    base = 15;
+    // 第一個反賊死亡後，自己就是唯一反賊，其他非主公必為忠臣／內奸；
+    // 這是公開資訊可斷定的敵人，可以放心加壓，不會再誤傷隊友。
+    const revealed = activeMemory?.knownRole;
+    const deadRebels = revealed
+      ? [...revealed.values()].filter((role) => role === 'rebel').length
+      : 0;
+    if (deadRebels >= 1) return 80;
+    // 前期未知目標可能是另一名反賊；未知不當敵人，先保留手牌集中打主公。
+    base = 0;
   } else if (self.role === 'loyal') {
     if (target.role === 'lord') return -100;
     base = 40;
@@ -529,6 +537,32 @@ function isLordFirstTurn(view: GameView, self: PlayerView): boolean {
   return self.role === 'lord' && view.turnCount === 1;
 }
 
+/**
+ * 這張牌／技能是否會直接傷害主公（不計算鐵索連環等後續傳導）。
+ * 主公身份公開，因此忠臣與內奸都能由公開資訊判斷這樣做是否會傷到自己人
+ * 或令反賊直接獲勝。
+ */
+function optionWouldDamageLord(view: GameView, option: PlayOption): boolean {
+  const lord = view.players.find((player) => player.role === 'lord');
+  if (!lord || !lord.alive) return false;
+  const targetsLord = option.targets.includes(lord.id);
+  if (targetsLord) {
+    if (
+      option.asCard === 'slash' ||
+      option.asCard === 'fire_slash' ||
+      option.asCard === 'thunder_slash' ||
+      option.asCard === 'duel' ||
+      option.asCard === 'fire_attack' ||
+      option.asCard === 'barbarian' ||
+      option.asCard === 'arrows'
+    ) {
+      return true;
+    }
+    if (option.skill === 'fanjian' || option.skill === 'lijian') return true;
+  }
+  return option.asCard === 'collateral' && option.targets[1] === lord.id;
+}
+
 /** 主公第一回合只准一張「普通」試探【殺】：單一目標、只用一張手牌。 */
 function isPlainSlashOption(option: PlayOption): boolean {
   return isSlashOption(option) && option.cards.length === 1 && option.targets.length === 1;
@@ -618,6 +652,12 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
     const target = option.targets[0] === undefined ? null : view.players[option.targets[0]] ?? null;
 
     if (option.kind === 'play') {
+      // 忠臣不會傷害主公；內奸在還有其他人時傷害主公會直接讓反賊獲勝。
+      if (optionWouldDamageLord(view, option)) {
+        const alive = view.players.filter((player) => player.alive).length;
+        if (self.role === 'loyal') continue;
+        if (self.role === 'spy' && alive > 2) continue;
+      }
       // 主公所有回合：高成本單體敵意牌只打公開資訊足以斷定的敵人。
       if (self.role === 'lord' && isHighCostHostile(option) && !targetsAllConfirmed(view, self, option)) {
         continue;
@@ -811,7 +851,10 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
           const player = view.players[id];
           if (!player) continue;
           const enemy = roleEnemyScore(view, self, player);
-          if (player.id === self.id || enemy <= 0) {
+          // 反賊前期唔用貴牌打未知，但【殺】是低成本試探：未知目標仍可試刀，
+          // 只是價值較低，避免完全不行動令對局拖死。
+          const unknownProbe = self.role === 'rebel' && relationOf(view, self, player) === 'unknown';
+          if (player.id === self.id || (enemy <= 0 && !unknownProbe)) {
             friendlyTargets += 1;
             continue;
           }
@@ -824,7 +867,7 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
             wine: self.wine,
             luoyi: Boolean(activeMemory && activeMemory.luoyiTurn === view.turnCount),
           });
-          score += 40 + enemy * 0.25;
+          score += unknownProbe ? 30 : 40 + enemy * 0.25;
           if (player.hp <= damage) score += 70;
           if (player.handCount === 0) score += 12;
           if (player.equips.armor?.name === 'vine_armor' && name === 'fire_slash') score += 25;
@@ -1319,7 +1362,13 @@ function chooseResponse(
     const dying = dyingId === null ? null : view.players[dyingId] ?? null;
     const savesLord = self.role === 'loyal' && dying?.role === 'lord';
     const savesAlly = self.role === 'lord' && dying?.role === 'loyal';
-    if (dyingId === self.id || savesLord || savesAlly) {
+    // 反賊救公開可辨認的隊友；未知目標不救，避免用【桃】救錯人。
+    const savesRebel =
+      self.role === 'rebel' &&
+      dying !== null &&
+      dying.id !== self.id &&
+      relationOf(view, self, dying) === 'ally';
+    if (dyingId === self.id || savesLord || savesAlly || savesRebel) {
       const heal = options.find((option) => option.asCard === 'peach' || option.asCard === 'wine');
       if (heal) return { type: 'option', optionId: heal.id };
     }
