@@ -218,11 +218,15 @@ describe('M3 第二批武將技能（判定與傷害）', () => {
     expect(state.players[1]!.hp).toBe(state.players[1]!.maxHp - 1);
   });
 
-  it('遺計：受到傷害後摸兩張', () => {
+  it('遺計：觀看牌堆頂兩張並可分配給其他角色', () => {
     const state = makeState(['guo_jia', 'zhang_fei', 'guan_yu', 'zhao_yun', 'lv_bu']);
     state.turn = 1;
     state.players[1]!.hand = [card(130, 'slash', 'spade', 7)];
+    // takeFromDeck 從牌堆尾端取牌，尾端兩張會被【遺計】看到。
+    state.deck[state.deck.length - 1] = card(1400, 'peach', 'heart', 3);
+    state.deck[state.deck.length - 2] = card(1401, 'dodge', 'diamond', 2);
 
+    let gave = 0;
     drive(
       state,
       (request, current) => {
@@ -232,12 +236,22 @@ describe('M3 第二批武將技能（判定與傷害）', () => {
           );
           if (found) return option(found.id);
         }
+        if (request.kind === 'choosePlayers' && request.reason === '遺計') {
+          gave += 1;
+          return { type: 'players', players: [1] };
+        }
         return baseline(request, current);
       },
-      (current) => logged(current, '遺計'),
+      (current) => current.players[1]!.hand.length >= 4,
       4000,
     );
-    expect(state.players[0]!.hand.length).toBe(2);
+
+    expect(gave).toBe(2);
+    // 兩張牌都交給玩家 1，郭嘉自己不留牌。
+    expect(state.players[1]!.hand.map((item) => item.id)).toEqual(
+      expect.arrayContaining([1400, 1401]),
+    );
+    expect(state.players[0]!.hand).toHaveLength(0);
   });
 
   it('天妒：判定後可獲得判定牌', () => {

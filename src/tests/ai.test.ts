@@ -195,6 +195,27 @@ describe('AI 拆牌判斷', () => {
     }
   });
 
+  it('遺計分配：優先給自己或隊友，不會主動送牌給敵人', () => {
+    const state = fresh();
+    const request: Request = {
+      id: 31,
+      player: 0,
+      prompt: '遺計：選擇獲得牌的角色',
+      kind: 'choosePlayers',
+      candidates: [0, 1, 2],
+      min: 1,
+      max: 1,
+      reason: '遺計',
+    };
+    state.pending = request;
+    const view = viewFor(state, 0);
+
+    expect(decide(view, request, { rngState: 1 })).toEqual({
+      type: 'players',
+      players: [0],
+    });
+  });
+
   function actionRequest(player: number, options: PlayOption[]): Request {
     return {
       id: 20,

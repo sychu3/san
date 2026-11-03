@@ -1769,6 +1769,20 @@ export function decide(
     case 'chooseCard':
       return chooseCard(request, view, rng);
     case 'choosePlayers': {
+      // 遺計是給牌：優先把牌交給自己或隊友（手牌少的優先），不會主動送給敵人。
+      if (request.reason === '遺計') {
+        const self = selfOf(view);
+        const rank: Record<Relation, number> = { ally: 0, unknown: 1, enemy: 2 };
+        const picked = [...new Set(request.candidates)]
+          .flatMap((id) => {
+            const player = view.players[id];
+            if (!player) return [];
+            return [{ id, relation: relationOf(view, self, player), handCount: player.handCount }];
+          })
+          .sort((a, b) => rank[a.relation] - rank[b.relation] || a.handCount - b.handCount);
+        const count = Math.max(request.min, Math.min(request.max, picked.length));
+        return { type: 'players', players: picked.slice(0, count).map((item) => item.id) };
+      }
       // 需要指定目標的技能（突襲、流離）只用公開資訊挑人：
       // 先排敵人（仇恨高的優先、手牌多的優先），隊友排最後，
       // 且人數以「值得的目標數」為上限，避免把效果指向隊友。

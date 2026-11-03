@@ -2940,19 +2940,63 @@ function* dealDamage(
     }
   }
 
-  // 遺計：受到傷害後摸兩張（每點傷害兩張）。
+  // 遺計：每受到 1 點傷害後，觀看牌堆頂兩張並分配給任意角色。
   if (hasSkill(target, 'yiji')) {
-    const chosen = yield* askResponse(
-      state,
-      target,
-      'choice',
-      [{ id: 'yiji', label: `遺計：摸 ${amount * 2} 張牌`, kind: 'skill', cards: [], skill: 'yiji' }],
-      '是否發動【遺計】？',
-      '遺計',
-    );
-    if (chosen) {
-      log(state, 'draw', `${nameOf(state, target.id)} 發動【遺計】。`);
-      drawCards(state, target, amount * 2);
+    for (let point = 0; point < amount; point += 1) {
+      const chosen = yield* askResponse(
+        state,
+        target,
+        'choice',
+        [{ id: 'yiji', label: '遺計：觀看牌堆頂兩張並分配', kind: 'skill', cards: [], skill: 'yiji' }],
+        '是否發動【遺計】？',
+        '遺計',
+      );
+      if (!chosen) continue;
+
+      const revealed = takeFromDeck(state, 2);
+      if (revealed.length === 0) break;
+      log(
+        state,
+        'draw',
+        `${nameOf(state, target.id)} 發動【遺計】，觀看牌堆頂 ${revealed.length} 張並分配。`,
+      );
+
+      const remaining = [...revealed];
+      while (remaining.length > 0) {
+        const picked = yield* askRevealed(
+          state,
+          target,
+          remaining,
+          `遺計：選擇要交出的牌（剩餘 ${remaining.length} 張）`,
+        );
+        if (!picked) break;
+        const index = remaining.findIndex((card) => card.id === picked.id);
+        if (index >= 0) remaining.splice(index, 1);
+
+        const candidates = state.players.filter((player) => player.alive).map((player) => player.id);
+        const recipients = yield* askPlayers(
+          state,
+          target,
+          candidates,
+          1,
+          1,
+          '遺計',
+          `遺計：選擇獲得【${cardLabel(picked.name)}】的角色`,
+        );
+        const recipient = recipients[0] === undefined ? null : state.players[recipients[0]] ?? null;
+        if (!recipient) {
+          remaining.splice(index, 0, picked);
+          break;
+        }
+        recipient.hand.push(picked);
+        log(
+          state,
+          'draw',
+          `${nameOf(state, target.id)} 的【遺計】將一張牌交給 ${nameOf(state, recipient.id)}。`,
+        );
+      }
+      // 未被分配的牌進入棄牌堆。
+      pushDiscard(state, remaining);
     }
   }
 
