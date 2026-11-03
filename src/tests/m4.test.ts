@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { createGame, viewFor } from '../engine/state';
 import { runGame } from '../engine/engine';
 import type { GameView, PlayOption, PlayerId, PlayerView, Request } from '../engine/types';
-import { createAiMemory, decide, updateMemory, type AiMemory } from '../ai/policy';
+import { beliefsFor, createAiMemory, decide, updateMemory, type AiMemory } from '../ai/policy';
 import { autoPlayGame } from '../game/autoplay';
+import { GameController } from '../game/controller';
 
 function player(id: number, role: PlayerView['role'], alive = true): PlayerView {
   return { id, role, alive } as PlayerView;
@@ -249,6 +250,75 @@ describe('M4 公開事件與身份信念', () => {
         const result = autoPlayGame({ seed, difficulty, maxRequests: 400_000 });
         expect(result.winner.roles.length).toBeGreaterThan(0);
       }
+    }
+  });
+
+  it('公開事件：治療主公與擊殺內奸都會影響信念，但治療有軟性上限', () => {
+    const memory = createAiMemory();
+    const view = {
+      turnCount: 1,
+      pending: null,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null), player(4, null)],
+      events: [
+        { seq: 1, kind: 'use', source: 2, target: 1, cardName: 'barbarian' },
+        { seq: 2, kind: 'damage', source: 2, target: 1, cardName: 'arrows', amount: 1 },
+        { seq: 3, kind: 'death', source: 2, target: 4, role: 'spy' },
+        { seq: 4, kind: 'heal', source: 2, target: 1, skill: 'jieyin', amount: 1 },
+        { seq: 5, kind: 'heal', source: 2, target: 1, skill: 'jieyin', amount: 1 },
+        { seq: 6, kind: 'heal', source: 2, target: 1, skill: 'jieyin', amount: 1 },
+      ],
+    } as unknown as GameView;
+    updateMemory(view, memory);
+
+    // +1 使用、+2 群體傷害、−4 擊殺內奸，三次結姻治療主公最多只能降到 −5。
+    expect(memory.rebelScore.get(2)).toBe(-5);
+  });
+
+  it('上帝視角 beliefsFor 提供每人判斷與最近原因', () => {
+    const memory = createAiMemory();
+    const view = {
+      turnCount: 1,
+      pending: null,
+      players: [
+        player(0, 'lord'),
+        player(1, null),
+        player(2, null),
+        player(3, null),
+        player(4, null),
+      ],
+      events: [
+        { seq: 1, kind: 'damage', source: 2, target: 0, amount: 1 },
+        { seq: 2, kind: 'damage', source: 2, target: 0, amount: 1 },
+        { seq: 3, kind: 'heal', source: 3, target: 0, skill: 'jieyin', amount: 1 },
+        { seq: 4, kind: 'heal', source: 3, target: 0, skill: 'jieyin', amount: 1 },
+        { seq: 5, kind: 'heal', source: 4, target: 0, skill: 'jieyin', amount: 1 },
+        { seq: 6, kind: 'save', source: 4, target: 0, cardName: 'peach' },
+      ],
+    } as unknown as GameView;
+    updateMemory(view, memory, 0);
+
+    const belief = beliefsFor(view, memory, 0);
+    expect(belief.observer).toBe(0);
+    expect(belief.cells).toHaveLength(5);
+    expect(belief.cells.find((cell) => cell.target === 0)!.relation).toBe('ally');
+    expect(belief.cells.find((cell) => cell.target === 2)!.relation).toBe('enemy');
+    // 只靠治療最多降到 −5，仍未達隊友門檻。
+    expect(belief.cells.find((cell) => cell.target === 3)!.relation).toBe('unknown');
+    // 治療加上瀕死救援是硬性證據，可成為隊友。
+    const healer = belief.cells.find((cell) => cell.target === 4)!;
+    expect(healer.relation).toBe('ally');
+    expect(healer.notes.some((note) => note.text.includes('救助主公'))).toBe(true);
+  });
+
+  it('只有上帝視角會提供 AI 信念', () => {
+    const off = new GameController({ seed: 3, humanId: 0, godMode: false });
+    expect(off.getBeliefs()).toEqual([]);
+
+    const on = new GameController({ seed: 3, humanId: 0, godMode: true });
+    const beliefs = on.getBeliefs();
+    expect(beliefs.length).toBeGreaterThan(0);
+    for (const observer of beliefs) {
+      expect(observer.cells).toHaveLength(5);
     }
   });
 });

@@ -16,6 +16,7 @@ import {
 } from './game/settings';
 import { playSound } from './audio/sounds';
 import { GameTable } from './ui/GameTable';
+import { BeliefPanel } from './ui/BeliefPanel';
 import { PromptPanel } from './ui/PromptPanel';
 import { LogPanel } from './ui/LogPanel';
 import { CardView } from './ui/CardView';
@@ -157,6 +158,7 @@ export default function App() {
 
   const human = view.players[controller.humanId];
   const hand = human?.hand ?? [];
+  const beliefs = !replay && view.godMode ? controller.getBeliefs() : null;
   const selectableCards = useMemo(() => {
     if (pending?.kind === 'chooseCards') return new Set(pending.cards);
     if (pending?.kind === 'chooseFrom') return new Set(pending.cards.map((card) => card.id));
@@ -409,6 +411,10 @@ export default function App() {
       <main className="layout">
         <div className="board">
           <GameTable view={view} humanId={controller.humanId} hitId={hitId} />
+
+          {beliefs && beliefs.length > 0 && (
+            <BeliefPanel view={view} beliefs={beliefs} humanId={controller.humanId} />
+          )}
 
           {pending?.kind === 'response' && pending.need === 'peach' && (
             <div className="dying-banner" role="alert">

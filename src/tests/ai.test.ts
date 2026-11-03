@@ -670,7 +670,7 @@ describe('技能與牌只對合理目標使用', () => {
     state.publicEvents = [{ seq: 2, kind: 'death', source: 4, target: 3, role: 'rebel' }];
     const rebelMemory = createAiMemory();
     updateMemory(viewFor(state, 0), rebelMemory);
-    expect(rebelMemory.rebelScore.get(4)).toBe(-3);
+    expect(rebelMemory.rebelScore.get(4)).toBe(-4);
   });
 
   it('反賊不會攻擊已明顯曝露的同夥，但仍會打沒有線索的目標', () => {
@@ -720,9 +720,10 @@ describe('技能與牌只對合理目標使用', () => {
     });
   });
 
-  it('忠臣不會攻擊明顯救援過主公的人', () => {
+  it('主公不會攻擊明顯救援過主公的人；忠臣則仍依人數推理保留警戒', () => {
     const state = fresh();
-    state.players[0]!.role = 'loyal';
+    state.players[0]!.role = 'lord';
+    state.players[1]!.role = 'loyal';
     state.players[0]!.hand = [card(9710, 'slash', 'spade', 7)];
 
     const helper: PlayOption = {
@@ -739,11 +740,27 @@ describe('技能與牌只對合理目標使用', () => {
 
     const memory = createAiMemory();
     memory.rebelScore.set(2, -8);
+    // 主公還有一個忠臣名額，行為上救過主公的人可被視為隊友。
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
       type: 'option',
       optionId: 'pass',
     });
 
+    // 忠臣知道自己不可能是另一名忠臣：即使對方救過主公，仍會在有嫌疑時出手。
+    const loyalState = fresh();
+    loyalState.players[0]!.role = 'loyal';
+    loyalState.players[0]!.hand = [card(9711, 'slash', 'spade', 7)];
+    const loyalRequest = actionRequest(0, [helper, pass]);
+    loyalState.pending = loyalRequest;
+    const loyalMemory = createAiMemory();
+    loyalMemory.rebelScore.set(2, -8);
+    expect(decide(viewFor(loyalState, 0), loyalRequest, { rngState: 1 }, loyalMemory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:helper',
+    });
+
+    // 沒有行為線索時仍會試探未知目標；主公需要攻擊範圍，補一把青釭劍。
+    state.players[0]!.equips.weapon = card(9712, 'qinggang', 'spade', 1);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
       type: 'option',
       optionId: 'slash:helper',

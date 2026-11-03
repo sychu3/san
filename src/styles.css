@@ -1910,3 +1910,168 @@ input:focus-visible {
   font-size: 11px;
   color: var(--gold-bright);
 }
+
+/* ------------------------------------------------------------------ */
+/* AI 身份推理（上帝視角）                                             */
+/* ------------------------------------------------------------------ */
+
+.beliefs {
+  margin-top: 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: var(--panel-shadow);
+}
+
+.beliefs__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.beliefs__title {
+  font-family: "Noto Serif TC", "Songti TC", serif;
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  color: var(--gold);
+}
+
+.beliefs__hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.beliefs__scroll {
+  overflow-x: auto;
+}
+
+.beliefs__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.beliefs__table th,
+.beliefs__table td {
+  border: 1px solid var(--line);
+  padding: 4px 6px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.beliefs__table thead th {
+  color: var(--text-soft);
+  font-weight: 500;
+}
+
+.beliefs__observer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+}
+
+.beliefs__observer-name {
+  color: var(--text);
+}
+
+.beliefs__cell {
+  cursor: pointer;
+}
+
+.beliefs__cell--self {
+  cursor: default;
+  color: var(--muted);
+}
+
+.beliefs__cell--enemy {
+  color: var(--role-rebel-text);
+}
+
+.beliefs__cell--ally {
+  color: var(--jade-text-strong);
+}
+
+.beliefs__cell--unknown {
+  color: var(--muted);
+}
+
+.beliefs__cell--selected {
+  outline: 2px solid var(--gold);
+  outline-offset: -2px;
+}
+
+.beliefs__col--human {
+  background: rgba(200, 164, 93, 0.08);
+}
+
+.beliefs__relation {
+  margin-right: 4px;
+  font-weight: 700;
+}
+
+.beliefs__score,
+.beliefs__delta {
+  font-variant-numeric: tabular-nums;
+}
+
+.beliefs__known {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--text-soft);
+}
+
+.beliefs__detail {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.beliefs__detail-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.beliefs__notes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.beliefs__notes li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.beliefs__delta {
+  min-width: 34px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.beliefs__delta--up {
+  color: var(--role-rebel-text);
+}
+
+.beliefs__delta--down {
+  color: var(--jade-text-strong);
+}
+
+.beliefs__notes-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}

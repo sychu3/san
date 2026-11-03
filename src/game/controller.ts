@@ -9,7 +9,14 @@ import type {
 } from '../engine/types';
 import { createGame, viewFor, type CreateGameOptions } from '../engine/state';
 import { runGame } from '../engine/engine';
-import { createAiMemory, decide, type AiMemory } from '../ai/policy';
+import {
+  beliefsFor,
+  createAiMemory,
+  decide,
+  updateMemory,
+  type AiMemory,
+  type ObserverBelief,
+} from '../ai/policy';
 import type { RngState } from '../engine/rng';
 import { AI_RNG_XOR, createSaveFile, type SaveFile, type SavedResponse } from './save';
 
@@ -70,6 +77,23 @@ export class GameController {
 
   isGodMode(): boolean {
     return this.godMode;
+  }
+
+  /**
+   * 上帝視角用：各 AI 目前對全桌的身份判斷。
+   * 只由公開事件與各自的 AI 記憶推得，不含隱藏手牌或牌堆順序。
+   */
+  getBeliefs(): ObserverBelief[] {
+    // 只有上帝視角才提供；避免一般對局意外取得除錯資訊。
+    if (!this.godMode) return [];
+    return this.state.players
+      .filter((player) => player.alive && player.id !== this.humanId)
+      .map((player) => {
+        const view = viewFor(this.state, player.id);
+        const memory = this.memoryFor(player.id);
+        updateMemory(view, memory, player.id);
+        return beliefsFor(view, memory, player.id);
+      });
   }
 
   getDifficulty(): Difficulty {

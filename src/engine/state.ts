@@ -185,14 +185,15 @@ export function heal(
   player: PlayerState,
   amount: number,
   reason: string,
-): void {
-  if (!player.alive || amount <= 0) return;
+): number {
+  if (!player.alive || amount <= 0) return 0;
   const before = player.hp;
   player.hp = Math.min(player.maxHp, player.hp + amount);
   const healed = player.hp - before;
   if (healed > 0) {
     log(state, 'heal', `${generalOf(player).name} 回復 ${healed} 點體力（${reason}）。`);
   }
+  return healed;
 }
 
 export function removeCardFromPlayer(

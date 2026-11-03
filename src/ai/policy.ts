@@ -21,6 +21,33 @@ import { nextFloat } from '../engine/rng';
  * 目標評分依角色與公開資訊（主公已知、自己身份已知）決定。
  */
 
+/** 上帝視角用：單筆公開事件對某個嫌疑分數的影響。 */
+export interface BeliefNote {
+  seq: number;
+  target: PlayerId;
+  delta: number;
+  text: string;
+}
+
+/** 上帝視角用：某個觀察者對某個目標的目前判斷。 */
+export interface BeliefCell {
+  observer: PlayerId;
+  target: PlayerId;
+  /** 越高越像反賊；範圍 −20～+20。 */
+  score: number;
+  relation: Relation;
+  /** 已由死亡公開或本來就公開的身份。 */
+  knownRole: Role | null;
+  /** 最近幾筆造成分數變動的公開事件。 */
+  notes: BeliefNote[];
+}
+
+/** 上帝視角用：一個觀察者對全桌的判斷。 */
+export interface ObserverBelief {
+  observer: PlayerId;
+  cells: BeliefCell[];
+}
+
 /**
  * AI 的跨回合記憶：只由公開事件（`GameView.events`）更新。
  * 不保存任何手牌、牌堆順序或未公開身份。
@@ -31,6 +58,8 @@ export interface AiMemory {
   rebelScore: Map<PlayerId, number>;
   /** 死亡時已公開的身份。 */
   knownRole: Map<PlayerId, Role>;
+  /** 最近的身份信念變動；只在上帝視角顯示，不影響決策。 */
+  beliefNotes: BeliefNote[];
   /** 公開打出過的【閃】／【桃】次數（高手難度的手牌推測）。 */
   playedDodge: Map<PlayerId, number>;
   playedPeach: Map<PlayerId, number>;
@@ -52,6 +81,7 @@ export function createAiMemory(): AiMemory {
     lastEventSeq: 0,
     rebelScore: new Map(),
     knownRole: new Map(),
+    beliefNotes: [],
     playedDodge: new Map(),
     playedPeach: new Map(),
     rendeTurn: -1,
@@ -64,48 +94,154 @@ export function createAiMemory(): AiMemory {
   };
 }
 
+/** 加上增減並回傳實際套用的值（受 −20～+20 上限影響）。 */
 function bump(
   map: Map<number, number>,
   id: number,
   delta: number,
   min = -20,
   max = 20,
-): void {
-  const next = Math.max(min, Math.min(max, (map.get(id) ?? 0) + delta));
+): number {
+  const before = map.get(id) ?? 0;
+  const next = Math.max(min, Math.min(max, before + delta));
   map.set(id, next);
+  return next - before;
 }
 
-function applyEvent(view: GameView, memory: AiMemory, event: PublicEvent): void {
+const ROLE_NOTE_LABELS: Record<Role, string> = {
+  lord: '主公',
+  loyal: '忠臣',
+  rebel: '反賊',
+  spy: '內奸',
+};
+
+const SKILL_NOTE_LABELS: Record<string, string> = {
+  jieyin: '結姻',
+  qingnang: '青囊',
+  yiji: '遺計',
+  rende: '仁德',
+};
+
+function eventNoteLabel(event: PublicEvent): string {
+  if (event.skill) return SKILL_NOTE_LABELS[event.skill] ?? event.skill;
+  if (event.cardName) return CARD_META[event.cardName]?.label ?? event.cardName;
+  return '公開行動';
+}
+
+/**
+ * 套用一次嫌疑分數增減。
+ * `softFloor` 用於「軟性正面證據」（治療、給牌）：這類證據最多只能把嫌疑降到
+ * 這個下限，不能只靠治療／給牌就讓一名角色被當成確定隊友；要更進一步信任，
+ * 必須有擊殺反賊／內奸或瀕死救援這類硬性證據。
+ */
+function applyBeliefScore(
+  memory: AiMemory,
+  target: PlayerId,
+  delta: number,
+  softFloor?: number,
+): number {
+  const before = memory.rebelScore.get(target) ?? 0;
+  if (softFloor !== undefined && delta < 0 && before <= softFloor) return 0;
+  const floor = delta < 0 && softFloor !== undefined ? softFloor : -20;
+  const next = Math.max(floor, Math.min(20, before + delta));
+  memory.rebelScore.set(target, next);
+  return next - before;
+}
+
+/** 調整嫌疑分數並記錄原因，供上帝視角顯示；回傳實際套用值。 */
+function addBelief(
+  memory: AiMemory,
+  target: PlayerId,
+  delta: number,
+  seq: number,
+  text: string,
+  softFloor?: number,
+): number {
+  const applied = applyBeliefScore(memory, target, delta, softFloor);
+  if (applied === 0) return 0;
+  memory.beliefNotes.push({ seq, target, delta: applied, text });
+  if (memory.beliefNotes.length > 60) {
+    memory.beliefNotes.splice(0, memory.beliefNotes.length - 60);
+  }
+  return applied;
+}
+
+function applyEvent(
+  view: GameView,
+  memory: AiMemory,
+  event: PublicEvent,
+  selfId: PlayerId | null,
+): void {
   const lordId = view.players.find((player) => player.role === 'lord')?.id ?? null;
 
   if (event.kind === 'death' && event.target !== null && event.role) {
     memory.knownRole.set(event.target, event.role);
-    memory.rebelScore.set(
+    addBelief(
+      memory,
       event.target,
       event.role === 'rebel' ? 20 : event.role === 'spy' ? 8 : -20,
+      event.seq,
+      `死亡公開身份：${ROLE_NOTE_LABELS[event.role]}`,
     );
     // 死亡時公開的身份，也能反推兇手的陣營：殺了忠臣／主公＝反賊，
-    // 殺了反賊＝不是反賊（這是真正的新資訊，不像「主公打誰」只是雜訊）。
+    // 殺了反賊或內奸＝不是反賊（這是真正的新資訊，不像「主公打誰」只是雜訊）。
     if (event.source !== null && event.source !== event.target && event.source !== lordId) {
       if (event.role === 'loyal' || event.role === 'lord') {
-        bump(memory.rebelScore, event.source, 5);
-      } else if (event.role === 'rebel') {
-        bump(memory.rebelScore, event.source, -3);
+        addBelief(memory, event.source, 5, event.seq, `擊殺${ROLE_NOTE_LABELS[event.role]}`);
+      } else if (event.role === 'rebel' || event.role === 'spy') {
+        addBelief(memory, event.source, -4, event.seq, `擊殺${ROLE_NOTE_LABELS[event.role]}`);
       }
     }
     return;
   }
 
   if (event.kind === 'damage' && event.source !== null && event.target !== null) {
-    // 傷害主公＝敵意證據。目標一定是活人（身份未公開），所以不必考慮「已知身份」。
-    if (event.target === lordId) bump(memory.rebelScore, event.source, 4);
-    // 被主公打不算證據：主公沒有任何其他人拿不到的資訊（也用同一套公開事件推理），
-    // 開局更是見誰打誰，把他的目標當嫌疑只是雜訊。
+    // 傷害主公＝敵意證據。群體錦囊一定掃到主公，證據力比單體牌弱。
+    if (event.target === lordId) {
+      const group = event.cardName === 'barbarian' || event.cardName === 'arrows';
+      addBelief(
+        memory,
+        event.source,
+        group ? 2 : 4,
+        event.seq,
+        group ? '群體錦囊對主公造成傷害' : '對主公造成傷害',
+      );
+    } else {
+      // 群體錦囊同時打中可疑反賊時，抵消一部分「敵意」推論。
+      const targetScore = memory.rebelScore.get(event.target) ?? 0;
+      if (
+        (event.cardName === 'barbarian' || event.cardName === 'arrows') &&
+        targetScore >= TEAMMATE_EVIDENCE
+      ) {
+        addBelief(memory, event.source, -2, event.seq, '群體錦囊傷害可疑反賊');
+      }
+    }
+    return;
+  }
+
+  if (event.kind === 'heal' && event.source !== null && event.target !== null) {
+    if (event.target === lordId) {
+      // 治療主公是明確的親主公行為，但要真的回復體力才算（amount > 0）。
+      // 這是軟性證據：最多把嫌疑降到 −5，不能只靠治療就成為確定隊友。
+      const amount = event.amount ?? 1;
+      addBelief(
+        memory,
+        event.source,
+        -3 * amount,
+        event.seq,
+        `${eventNoteLabel(event)}治療主公`,
+        -5,
+      );
+    } else {
+      const targetScore = memory.rebelScore.get(event.target) ?? 0;
+      if (targetScore >= TEAMMATE_EVIDENCE) {
+        addBelief(memory, event.source, 2, event.seq, `${eventNoteLabel(event)}治療可疑反賊`);
+      }
+    }
     return;
   }
 
   if (event.kind === 'give' && event.source !== null && event.target !== null) {
-    const selfId = view.pending?.player ?? null;
     // 自己的給牌不拿來更新自己的信念，避免自我強化。
     if (event.source === selfId) return;
     // 主公的給牌可能是戰術或誤判，和「主公打誰」一樣不當陣營證據。
@@ -137,8 +273,17 @@ function applyEvent(view: GameView, memory: AiMemory, event: PublicEvent): void 
       const remaining = Math.max(0, 4 - Math.abs(used));
       const applied = Math.sign(delta) * Math.min(Math.abs(delta), remaining);
       if (applied !== 0) {
-        bump(memory.rebelScore, event.source, applied);
-        memory.giveDelta.set(event.source, used + applied);
+        const label = eventNoteLabel(event);
+        // 給主公牌同樣是軟性證據，最多降到 −5。
+        const actual = addBelief(
+          memory,
+          event.source,
+          applied,
+          event.seq,
+          `${label}${targetLooksLord ? '交給主公' : '交給可疑反賊'}`,
+          applied < 0 ? -5 : undefined,
+        );
+        memory.giveDelta.set(event.source, used + actual);
       }
     }
     return;
@@ -149,25 +294,41 @@ function applyEvent(view: GameView, memory: AiMemory, event: PublicEvent): void 
     if (event.cardName === 'peach') bump(memory.playedPeach, event.source, 1, 0, 20);
     if (event.target === lordId) {
       // 直接朝主公出【殺】、拆牌、決鬥等，即使被【閃】掉也是明確的敵意行為。
-      if (HOSTILE_DIRECTED.has(event.cardName)) bump(memory.rebelScore, event.source, 4);
-      // 南蠻入侵／萬箭齊發會掃到全場，證據力弱得多。
-      else if (HOSTILE_GROUP.has(event.cardName)) bump(memory.rebelScore, event.source, 1);
-      else if (BENEFICIAL_TRICKS.has(event.cardName)) bump(memory.rebelScore, event.source, -1);
+      if (HOSTILE_DIRECTED.has(event.cardName)) {
+        addBelief(memory, event.source, 4, event.seq, `對主公使用【${eventNoteLabel(event)}】`);
+      } else if (HOSTILE_GROUP.has(event.cardName)) {
+        // 南蠻入侵／萬箭齊發會掃到全場，證據力弱得多。
+        addBelief(memory, event.source, 1, event.seq, `【${eventNoteLabel(event)}】波及主公`);
+      } else if (BENEFICIAL_TRICKS.has(event.cardName)) {
+        addBelief(memory, event.source, -1, event.seq, `【${eventNoteLabel(event)}】對主公有利`);
+      }
+    } else if (event.target !== null) {
+      const targetScore = memory.rebelScore.get(event.target) ?? 0;
+      const group = HOSTILE_GROUP.has(event.cardName);
+      if (group && targetScore >= TEAMMATE_EVIDENCE) {
+        addBelief(memory, event.source, -2, event.seq, `【${eventNoteLabel(event)}】波及可疑反賊`);
+      } else if (group && targetScore <= ALLY_EVIDENCE) {
+        addBelief(memory, event.source, 1, event.seq, `【${eventNoteLabel(event)}】波及可疑隊友`);
+      }
     }
     return;
   }
 
   if (event.kind === 'save' && event.target === lordId && event.source !== null) {
-    bump(memory.rebelScore, event.source, -4);
+    addBelief(memory, event.source, -4, event.seq, '瀕死時救助主公');
   }
 }
 
 /** 用公開事件更新 AI 記憶（增量，只處理新事件）。 */
-export function updateMemory(view: GameView, memory: AiMemory): void {
+export function updateMemory(
+  view: GameView,
+  memory: AiMemory,
+  selfId: PlayerId | null = view.pending?.player ?? null,
+): void {
   for (const event of view.events) {
     if (event.seq <= memory.lastEventSeq) continue;
     memory.lastEventSeq = event.seq;
-    applyEvent(view, memory, event);
+    applyEvent(view, memory, event, selfId);
   }
 }
 
@@ -216,20 +377,25 @@ function deducedRebelAlly(self: PlayerView, view: GameView, target: PlayerView):
 const TEAMMATE_EVIDENCE = 6;
 const ALLY_EVIDENCE = -6;
 
-/** 由身份信念對敵意分數做調整；新手難度完全忽略。 */
-function beliefAdjust(self: PlayerView, target: PlayerView): number {
+/**
+ * 由身份信念對敵意分數做調整；新手難度完全忽略。
+ * 是否「視為隊友」一律以 `relationFor` 為準，因此身份人數的推理
+ * （例如忠臣知道自己不可能是別人的忠臣）會覆蓋單純的行為信任。
+ */
+function beliefAdjust(view: GameView, self: PlayerView, target: PlayerView): number {
   if (activeDifficulty === 'easy' || !activeMemory) return 0;
   const score = activeMemory.rebelScore.get(target.id) ?? 0;
   if (score === 0) return 0;
+  const relation = relationFor(view, self, target, activeMemory);
   const weight = activeDifficulty === 'hard' ? 0.6 : 0.4;
   if (self.role === 'rebel') {
     // 反賊只要主公死；公開行為明顯像反賊的人就當隊友，不再攻擊（可能是另一名反賊）。
-    if (score >= TEAMMATE_EVIDENCE) return -80;
+    if (relation === 'ally') return -80;
     return -score * weight;
   }
   if (self.role === 'spy') return score * weight * 0.5;
-  // 忠臣／主公：明顯救援過主公的人視為隊友，不再攻擊。
-  if (score <= ALLY_EVIDENCE) return -80;
+  // 忠臣／主公：行為上明顯救援過主公、而且身份人數仍容得下一個隊友時才視為隊友。
+  if (relation === 'ally') return -80;
   return score * weight;
 }
 
@@ -243,11 +409,51 @@ function isRoleEnemy(selfRole: Role, otherRole: Role): boolean {
   return otherRole !== 'spy';
 }
 
-function relationOf(view: GameView, self: PlayerView, target: PlayerView): Relation {
+/**
+ * 行為上的隊友只能佔用身份人數容許的名額。
+ * 例如忠臣知道自己不是別的忠臣，因此不能再把任何人當成行為上的忠臣；
+ * 主公最多只能有一個行為上的忠臣；反賊最多只能有一名行為上的同夥。
+ */
+function behaviorAllyAllowed(
+  view: GameView,
+  self: PlayerView,
+  memory: AiMemory | undefined,
+  targetId: PlayerId,
+  mode: 'trust' | 'rebel',
+  slots: number,
+): boolean {
+  if (slots <= 0) return false;
+  const candidates = view.players.filter(
+    (player) =>
+      player.alive &&
+      player.id !== self.id &&
+      player.role === null &&
+      (memory?.knownRole.get(player.id) ?? null) === null,
+  );
+  if (mode === 'rebel') {
+    candidates.sort(
+      (a, b) => (memory?.rebelScore.get(b.id) ?? 0) - (memory?.rebelScore.get(a.id) ?? 0),
+    );
+  } else {
+    candidates.sort(
+      (a, b) => (memory?.rebelScore.get(a.id) ?? 0) - (memory?.rebelScore.get(b.id) ?? 0),
+    );
+  }
+  const index = candidates.findIndex((player) => player.id === targetId);
+  return index >= 0 && index < slots;
+}
+
+/** 由指定記憶推得的敵我三態；供 AI 決策與上帝視角共用。 */
+export function relationFor(
+  view: GameView,
+  self: PlayerView,
+  target: PlayerView,
+  memory: AiMemory | undefined,
+): Relation {
   if (self.role === null) return 'unknown';
   if (target.id === self.id) return 'ally';
   if (!target.alive) return 'unknown';
-  const known = target.role ?? activeMemory?.knownRole.get(target.id) ?? null;
+  const known = target.role ?? memory?.knownRole.get(target.id) ?? null;
   if (known !== null) {
     if (self.role === 'spy' && known === 'lord') {
       const alive = view.players.filter((player) => player.alive).length;
@@ -255,11 +461,54 @@ function relationOf(view: GameView, self: PlayerView, target: PlayerView): Relat
     }
     return isRoleEnemy(self.role, known) ? 'enemy' : 'ally';
   }
-  const score = activeMemory?.rebelScore.get(target.id) ?? 0;
+  const score = memory?.rebelScore.get(target.id) ?? 0;
   if (self.role === 'spy') return 'unknown';
-  if (score >= TEAMMATE_EVIDENCE) return self.role === 'rebel' ? 'ally' : 'enemy';
-  if (score <= ALLY_EVIDENCE) return self.role === 'rebel' ? 'enemy' : 'ally';
+  const counts = remainingRoleCounts(view, self, memory);
+  if (self.role === 'rebel') {
+    if (
+      score >= TEAMMATE_EVIDENCE &&
+      behaviorAllyAllowed(view, self, memory, target.id, 'rebel', counts.rebel)
+    ) {
+      return 'ally';
+    }
+    return 'unknown';
+  }
+  // 主公／忠臣：行為明顯像反賊就是敵人。
+  if (score >= TEAMMATE_EVIDENCE) return 'enemy';
+  // 行為上夠可信，而且身份人數仍容得下一個隊友。
+  if (
+    score <= ALLY_EVIDENCE &&
+    behaviorAllyAllowed(view, self, memory, target.id, 'trust', counts.loyal)
+  ) {
+    return 'ally';
+  }
   return 'unknown';
+}
+
+function relationOf(view: GameView, self: PlayerView, target: PlayerView): Relation {
+  return relationFor(view, self, target, activeMemory);
+}
+
+/** 上帝視角用：把某個觀察者目前的身份判斷整理成可顯示的資料。 */
+export function beliefsFor(
+  view: GameView,
+  memory: AiMemory,
+  observerId: PlayerId,
+): ObserverBelief {
+  const self = view.players[observerId];
+  if (!self) return { observer: observerId, cells: [] };
+  const cells: BeliefCell[] = view.players.map((target) => {
+    const isSelf = target.id === observerId;
+    return {
+      observer: observerId,
+      target: target.id,
+      score: isSelf ? 0 : memory.rebelScore.get(target.id) ?? 0,
+      relation: isSelf ? 'ally' : relationFor(view, self, target, memory),
+      knownRole: isSelf ? self.role : target.role ?? memory.knownRole.get(target.id) ?? null,
+      notes: isSelf ? [] : memory.beliefNotes.filter((note) => note.target === target.id).slice(-5),
+    };
+  });
+  return { observer: observerId, cells };
 }
 
 /**
@@ -274,6 +523,11 @@ function isConfirmedEnemy(view: GameView, self: PlayerView, target: PlayerView):
   if (relation === 'enemy') return true;
   if (relation === 'ally') return false;
   if (self.role === 'loyal' || self.role === 'spy') return target.role !== 'lord';
+  if (self.role === 'lord') {
+    // 主公：忠臣已公開死亡後，所有存活的未知非主公都只能是反賊或內奸。
+    if (target.role === 'lord') return false;
+    return remainingRoleCounts(view, self).loyal === 0;
+  }
   return false;
 }
 
@@ -430,7 +684,7 @@ function roleEnemyScore(view: GameView, self: PlayerView, target: PlayerView): n
     // 主公：其他人都可能是反賊或內奸。
     base = target.role === 'loyal' ? -30 : 45;
   }
-  return base + beliefAdjust(self, target);
+  return base + beliefAdjust(view, self, target);
 }
 
 /**
@@ -582,13 +836,17 @@ function canLordProbe(view: GameView, self: PlayerView, option: PlayOption): boo
 }
 
 /** 固定 5 人標準局的剩餘各身份數。 */
-function remainingRoleCounts(view: GameView, self: PlayerView): Record<Role, number> {
+function remainingRoleCounts(
+  view: GameView,
+  self: PlayerView,
+  memory: AiMemory | undefined = activeMemory,
+): Record<Role, number> {
   const counts: Record<Role, number> = { lord: 1, loyal: 1, rebel: 2, spy: 1 };
   for (const player of view.players) {
     const known =
       player.id === self.id
         ? self.role
-        : player.role ?? activeMemory?.knownRole.get(player.id) ?? null;
+        : player.role ?? memory?.knownRole.get(player.id) ?? null;
     if (known) counts[known] = Math.max(0, counts[known] - 1);
   }
   return counts;

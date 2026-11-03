@@ -1528,7 +1528,16 @@ function* resolveQingnang(
     'play',
     `${nameOf(state, player.id)} 發動【青囊】，令 ${nameOf(state, target.id)} 回復 1 點體力。`,
   );
-  heal(state, target, 1, '青囊');
+  const healed = heal(state, target, 1, '青囊');
+  if (target.id !== player.id && healed > 0) {
+    recordEvent(state, {
+      kind: 'heal',
+      source: player.id,
+      target: target.id,
+      skill: 'qingnang',
+      amount: healed,
+    });
+  }
 }
 
 /** 離間：棄一張牌，令兩名男性角色視為其中一名對另一名使用【決鬥】。 */
@@ -1660,7 +1669,18 @@ function* resolveJieyin(
   player.marks.jieyin_used = true;
   log(state, 'play', `${nameOf(state, player.id)} 發動【結姻】。`);
   heal(state, player, 1, '結姻');
-  if (target.id !== player.id) heal(state, target, 1, '結姻');
+  if (target.id !== player.id) {
+    const healed = heal(state, target, 1, '結姻');
+    if (healed > 0) {
+      recordEvent(state, {
+        kind: 'heal',
+        source: player.id,
+        target: target.id,
+        skill: 'jieyin',
+        amount: healed,
+      });
+    }
+  }
 }
 
 /** 連營：失去最後一張手牌時摸一張。 */
@@ -2988,7 +3008,21 @@ function* dealDamage(
           remaining.splice(index, 0, picked);
           break;
         }
+        const brokeKongcheng =
+          recipient.id !== target.id &&
+          hasSkill(recipient, 'kongcheng') &&
+          recipient.hand.length === 0;
         recipient.hand.push(picked);
+        if (recipient.id !== target.id) {
+          recordEvent(state, {
+            kind: 'give',
+            source: target.id,
+            target: recipient.id,
+            skill: 'yiji',
+            amount: 1,
+            brokeKongcheng,
+          });
+        }
         log(
           state,
           'draw',

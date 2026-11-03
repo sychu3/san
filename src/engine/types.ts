@@ -99,10 +99,12 @@ export type Difficulty = 'easy' | 'normal' | 'hard';
  */
 export interface PublicEvent {
   seq: number;
-  kind: 'use' | 'damage' | 'death' | 'save' | 'give';
+  kind: 'use' | 'damage' | 'death' | 'save' | 'give' | 'heal';
   source: PlayerId | null;
   target: PlayerId | null;
   cardName?: CardName;
+  /** 由技能造成的公開效果（例如 jieyin、qingnang、yiji）。 */
+  skill?: string;
   amount?: number;
   /** 只有 kind === 'death' 且身份公開時才有。 */
   role?: Role;
