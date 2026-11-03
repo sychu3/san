@@ -322,6 +322,26 @@ describe('M3 第二批武將技能（出牌與轉化）', () => {
     expect(logged(state, '反間')).toBe(true);
   });
 
+  it('反間：無論猜對猜錯，展示牌都會交給目標', () => {
+    const wrong = makeState(['zhou_yu', 'guan_yu', 'zhao_yun', 'lv_bu', 'diao_chan']);
+    wrong.players[0]!.hand = [card(180, 'peach', 'heart', 3)];
+
+    useOption(wrong, 0, (item) => item.skill === 'fanjian' && item.targets[0] === 1);
+    expect(logged(wrong, '獲得【反間】展示的牌')).toBe(true);
+    // 周瑜手牌少一張、目標剛好多一張，且沒有任何牌憑空消失。
+    expect(wrong.players[1]!.hand).toHaveLength(1);
+    expect(wrong.players[0]!.hand.length + wrong.players[1]!.hand.length).toBe(4);
+
+    const right = makeState(['zhou_yu', 'guan_yu', 'zhao_yun', 'lv_bu', 'diao_chan']);
+    right.players[0]!.hand = [card(181, 'peach', 'spade', 3)];
+
+    useOption(right, 0, (item) => item.skill === 'fanjian' && item.targets[0] === 1);
+    expect(right.players[1]!.hp).toBe(right.players[1]!.maxHp);
+    expect(logged(right, '獲得【反間】展示的牌')).toBe(true);
+    expect(right.players[1]!.hand).toHaveLength(1);
+    expect(right.players[0]!.hand.length + right.players[1]!.hand.length).toBe(4);
+  });
+
   it('奇襲：黑色牌當【過河拆橋】', () => {
     const state = makeState(['gan_ning', 'guan_yu', 'zhao_yun', 'lv_bu', 'diao_chan']);
     state.players[0]!.hand = [card(190, 'peach', 'spade', 3)];
@@ -410,6 +430,52 @@ describe('M3 第二批武將技能（鎖定與時機）', () => {
     expect(state.players[1]!.hp).toBe(state.players[1]!.maxHp);
     expect(state.players[2]!.hp).toBe(state.players[2]!.maxHp - 1);
     expect(logged(state, '流離')).toBe(true);
+  });
+
+  it('流離：可棄裝備支付，且棄牌後重算攻擊範圍', () => {
+    const state = makeState(['guan_yu', 'da_qiao', 'zhao_yun', 'lv_bu', 'diao_chan']);
+    state.players[0]!.hand = [card(400, 'slash', 'spade', 7)];
+    state.players[1]!.hand = [];
+    // 寒冰劍範圍 2；棄掉後只剩攻擊範圍 1，玩家 3、4 會離開候選。
+    state.players[1]!.equips.weapon = card(401, 'ice_sword', 'spade', 2);
+
+    let candidates: number[] = [];
+    useOption(
+      state,
+      0,
+      (item) => item.asCard === 'slash' && item.targets[0] === 1,
+      (request, current) => {
+        if (request.kind === 'response' && request.need === 'choice' && request.player === 1) {
+          const liuli = request.options.find((option) => option.skill === 'liuli');
+          if (liuli) return option(liuli.id);
+        }
+        if (request.kind === 'chooseFrom' && request.reason === '流離') {
+          return { type: 'cards', cards: [request.cards[0]!.id] };
+        }
+        if (request.kind === 'choosePlayers' && request.reason === '流離') {
+          candidates = [...request.candidates];
+          return { type: 'players', players: [request.candidates[0]!] };
+        }
+        return baseline(request, current);
+      },
+    );
+
+    expect(state.players[1]!.equips.weapon).toBeNull();
+    expect(candidates).toEqual([2]);
+    expect(candidates).not.toContain(0);
+    expect(state.players[2]!.hp).toBe(state.players[2]!.maxHp - 1);
+  });
+
+  it('流離：只有判定區的牌時不能發動，也不會免費轉移', () => {
+    const state = makeState(['guan_yu', 'da_qiao', 'zhao_yun', 'lv_bu', 'diao_chan']);
+    state.players[0]!.hand = [card(402, 'slash', 'spade', 7)];
+    state.players[1]!.hand = [];
+    state.players[1]!.judgeZone = [card(403, 'indulgence', 'spade', 6)];
+
+    useOption(state, 0, (item) => item.asCard === 'slash' && item.targets[0] === 1);
+    expect(state.players[1]!.hp).toBe(state.players[1]!.maxHp - 1);
+    expect(state.players[1]!.judgeZone).toHaveLength(1);
+    expect(logged(state, '流離')).toBe(false);
   });
 
   it('傾國：黑色手牌當【閃】', () => {

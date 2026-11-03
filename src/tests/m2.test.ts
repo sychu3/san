@@ -382,6 +382,135 @@ describe('無懈可擊與延時錦囊', () => {
     expect(handOf(state, 0)).toHaveLength(4);
   });
 
+  it('群體錦囊的無懈可擊只抵消其中一名目標', () => {
+    const state = fresh();
+    state.players[0]!.hand = [card(95, 'barbarian', 'spade', 7)];
+    state.players[2]!.hand = [card(96, 'nullification', 'spade', 11)];
+
+    let used = false;
+    playAction(
+      state,
+      0,
+      (option) => option.asCard === 'barbarian',
+      (request) => {
+        if (
+          request.kind === 'response' &&
+          request.need === 'wuxie' &&
+          request.player === 2 &&
+          (request.targets ?? []).includes(1)
+        ) {
+          const wuxie = request.options.find((item) => item.asCard === 'nullification');
+          if (wuxie && !used) {
+            used = true;
+            return { type: 'option', optionId: wuxie.id };
+          }
+        }
+        return baseline(request);
+      },
+    );
+    // 只有玩家 1 被抵消，其餘目標照常受到傷害。
+    expect(state.players[1]!.hp).toBe(5);
+    expect(state.players[2]!.hp).toBe(4);
+    expect(state.players[3]!.hp).toBe(4);
+    expect(state.players[4]!.hp).toBe(4);
+  });
+
+  it('群體錦囊同一目標可被兩張無懈可擊連環後恢復', () => {
+    const state = fresh();
+    state.players[0]!.hand = [card(97, 'barbarian', 'spade', 7)];
+    state.players[2]!.hand = [card(98, 'nullification', 'spade', 11)];
+    state.players[3]!.hand = [card(99, 'nullification', 'club', 12)];
+
+    const usedBy = new Set<number>();
+    playAction(
+      state,
+      0,
+      (option) => option.asCard === 'barbarian',
+      (request) => {
+        if (
+          request.kind === 'response' &&
+          request.need === 'wuxie' &&
+          (request.player === 2 || request.player === 3) &&
+          (request.targets ?? []).includes(1) &&
+          !usedBy.has(request.player)
+        ) {
+          const wuxie = request.options.find((item) => item.asCard === 'nullification');
+          if (wuxie) {
+            usedBy.add(request.player);
+            return { type: 'option', optionId: wuxie.id };
+          }
+        }
+        return baseline(request);
+      },
+    );
+    // 兩張無懈連環後，對玩家 1 的效果恢復，玩家 1 仍受到傷害。
+    expect(state.players[1]!.hp).toBe(4);
+  });
+
+  it('桃園結義逐目標無懈：只取消其中一名角色的回復', () => {
+    const state = fresh();
+    state.players[0]!.hp = 3;
+    state.players[1]!.hp = 3;
+    state.players[2]!.hp = 3;
+    state.players[0]!.hand = [card(310, 'peach_garden', 'heart', 1)];
+    state.players[2]!.hand = [card(311, 'nullification', 'spade', 11)];
+
+    let used = false;
+    playAction(
+      state,
+      0,
+      (option) => option.asCard === 'peach_garden',
+      (request) => {
+        if (
+          request.kind === 'response' &&
+          request.need === 'wuxie' &&
+          request.player === 2 &&
+          (request.targets ?? []).includes(1)
+        ) {
+          const wuxie = request.options.find((item) => item.asCard === 'nullification');
+          if (wuxie && !used) {
+            used = true;
+            return { type: 'option', optionId: wuxie.id };
+          }
+        }
+        return baseline(request);
+      },
+    );
+    expect(state.players[1]!.hp).toBe(3);
+    expect(state.players[0]!.hp).toBe(4);
+    expect(state.players[2]!.hp).toBe(4);
+  });
+
+  it('瀕死求桃從當前回合角色開始逆時針詢問', () => {
+    const state = fresh();
+    state.turn = 2;
+    state.players[1]!.hp = 1;
+    state.players[1]!.hand = [card(320, 'peach', 'heart', 3)];
+    state.players[2]!.hand = [card(321, 'slash', 'spade', 7)];
+    // 玩家 3 也有桃；依官方順序（從當前回合玩家 2 開始）會先問到玩家 3，
+    // 舊行為（從瀕死者玩家 1 開始）則會先問到玩家 1 自救。
+    state.players[3]!.hand = [card(322, 'peach', 'heart', 4)];
+
+    let used = false;
+    const peachRequest = driveUntil(
+      state,
+      (request) => {
+        if (!used && request.kind === 'action' && request.player === 2) {
+          const slash = request.options.find(
+            (item) => item.asCard === 'slash' && item.targets[0] === 1,
+          );
+          if (slash) {
+            used = true;
+            return { type: 'option', optionId: slash.id };
+          }
+        }
+        return baseline(request);
+      },
+      (request) => request.kind === 'response' && request.need === 'peach',
+    );
+    expect(peachRequest?.player).toBe(3);
+  });
+
   it('樂不思蜀判定非紅桃時跳過出牌階段', () => {
     const state = fresh();
     state.players[0]!.judgeZone = [card(100, 'indulgence', 'heart', 6)];
@@ -538,6 +667,78 @@ describe('八把武器', () => {
     );
     expect(state.players[1]!.hp).toBe(5);
     expect(handOf(state, 1)).toHaveLength(0);
+  });
+
+  it('寒冰劍不能棄置判定區的牌，也不能只憑判定牌發動', () => {
+    const state = fresh();
+    state.players[0]!.equips.weapon = card(214, 'ice_sword', 'spade', 2);
+    state.players[0]!.hand = [card(215, 'slash', 'spade', 8)];
+    state.players[1]!.judgeZone = [card(216, 'indulgence', 'spade', 6)];
+
+    playAction(
+      state,
+      0,
+      (option) => option.asCard === 'slash' && option.targets[0] === 1,
+      (request) => {
+        if (request.kind === 'response' && request.need === 'choice' && request.player === 0) {
+          const skill = request.options.find((option) => option.skill === 'ice_sword');
+          if (skill) return { type: 'option', optionId: skill.id };
+        }
+        return baseline(request);
+      },
+    );
+    expect(state.players[1]!.hp).toBe(4);
+    expect(state.players[1]!.judgeZone).toHaveLength(1);
+  });
+
+  it('寒冰劍在目標只有 1 張手牌時可發動並棄 1 張', () => {
+    const state = fresh();
+    state.players[0]!.equips.weapon = card(217, 'ice_sword', 'spade', 2);
+    state.players[0]!.hand = [card(218, 'slash', 'spade', 8)];
+    state.players[1]!.hand = [card(219, 'peach', 'heart', 5)];
+
+    playAction(
+      state,
+      0,
+      (option) => option.asCard === 'slash' && option.targets[0] === 1,
+      (request) => {
+        if (request.kind === 'response' && request.need === 'choice' && request.player === 0) {
+          const skill = request.options.find((option) => option.skill === 'ice_sword');
+          if (skill) return { type: 'option', optionId: skill.id };
+        }
+        return baseline(request);
+      },
+    );
+    expect(state.players[1]!.hp).toBe(5);
+    expect(handOf(state, 1)).toHaveLength(0);
+  });
+
+  it('寒冰劍：目標只有手牌時，棄牌觸發連營後仍要棄第二張', () => {
+    const state = fresh();
+    state.players[1]!.generalId = 'lu_xun';
+    state.players[0]!.equips.weapon = card(224, 'ice_sword', 'spade', 2);
+    state.players[0]!.hand = [card(225, 'slash', 'spade', 8)];
+    state.players[1]!.hand = [card(226, 'peach', 'heart', 5)];
+
+    playAction(
+      state,
+      0,
+      (option) => option.asCard === 'slash' && option.targets[0] === 1,
+      (request) => {
+        if (request.kind === 'response' && request.need === 'choice' && request.player === 0) {
+          const skill = request.options.find((option) => option.skill === 'ice_sword');
+          if (skill) return { type: 'option', optionId: skill.id };
+        }
+        return baseline(request);
+      },
+    );
+    expect(state.players[1]!.hp).toBe(5);
+    // 棄掉第一張後連營摸 1 張，寒冰劍再棄這張；失去最後手牌又觸發一次連營，最終留下 1 張。
+    expect(handOf(state, 1)).toHaveLength(1);
+    expect(
+      state.log.some((entry) => entry.text.includes('寒冰劍') && entry.text.includes('2 張牌')),
+    ).toBe(true);
+    expect(state.log.some((entry) => entry.text.includes('連營'))).toBe(true);
   });
 
   it('雌雄雙股劍令異性目標棄一張手牌', () => {

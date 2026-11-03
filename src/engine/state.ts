@@ -343,6 +343,14 @@ export function allCardsOf(player: PlayerState): Card[] {
   ];
 }
 
+/** 手牌區與裝備區的牌（不含判定區）；供只能操作手牌／裝備的效果使用。 */
+export function handAndEquips(player: PlayerState): Card[] {
+  return [
+    ...player.hand,
+    ...Object.values(player.equips).filter((card): card is Card => card !== null),
+  ];
+}
+
 function cloneRequest(request: Request): Request {
   if (request.kind === 'action') {
     return {

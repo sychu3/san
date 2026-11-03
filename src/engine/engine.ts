@@ -26,6 +26,7 @@ import {
   discardFromHand,
   drawCards,
   generalOf,
+  handAndEquips,
   heal,
   log,
   hasAnyCard,
@@ -53,6 +54,14 @@ import { hasSkill } from './skills';
 const MAX_TURNS = 500;
 const MAX_NULLIFICATION_CHAIN = 16;
 const MAX_REQUESTS_PER_TURN = 4000;
+
+/** 群體錦囊：官方對每個目標分別開啟【無懈可擊】窗口。 */
+const PER_TARGET_NULLIFICATION: ReadonlySet<CardName> = new Set([
+  'barbarian',
+  'arrows',
+  'peach_garden',
+  'harvest',
+]);
 
 /* ------------------------------------------------------------------ */
 /* 請求工具                                                            */
@@ -214,13 +223,14 @@ function* askCardFrom(
   target: PlayerState,
   reason: string,
   prompt: string,
+  includeJudge = true,
 ): Generator<Request, Card | null, Response> {
   const visible: Card[] = [];
   for (const slot of ['weapon', 'armor', 'horsePlus', 'horseMinus'] as const) {
     const card = target.equips[slot];
     if (card) visible.push(card);
   }
-  visible.push(...target.judgeZone);
+  if (includeJudge) visible.push(...target.judgeZone);
 
   const allowRandomHand = target.hand.length > 0;
   if (visible.length === 0 && !allowRandomHand) return null;
@@ -1078,8 +1088,8 @@ function* resolvePlayOption(
 
   pushDiscard(state, cards);
 
-  // 錦囊結算前開啟無懈可擊窗口。
-  if (meta.type === 'trick') {
+  // 錦囊結算前開啟無懈可擊窗口；群體錦囊改在每個目標結算前分別詢問。
+  if (meta.type === 'trick' && !PER_TARGET_NULLIFICATION.has(virtualName)) {
     const negated = yield* askNullification(state, use);
     if (negated) {
       log(state, 'play', `${useLabel(use)} 被【無懈可擊】抵消。`);
@@ -1194,6 +1204,14 @@ function* resolvePlayOption(
           );
           continue;
         }
+        if (yield* askNullification(state, use, target.id)) {
+          log(
+            state,
+            'play',
+            `【${cardLabel(virtualName)}】對 ${nameOf(state, target.id)} 的效果被【無懈可擊】抵消。`,
+          );
+          continue;
+        }
         const played = requireSha
           ? Boolean(yield* askForSha(state, target, `【${cardLabel(virtualName)}】`))
           : yield* askForShan(state, target, `【${cardLabel(virtualName)}】`);
@@ -1213,7 +1231,16 @@ function* resolvePlayOption(
 
     case 'peach_garden': {
       for (const target of turnOrderFrom(state, player.id)) {
-        if (target.alive) heal(state, target, 1, '桃園結義');
+        if (!target.alive) continue;
+        if (yield* askNullification(state, use, target.id)) {
+          log(
+            state,
+            'play',
+            `【桃園結義】對 ${nameOf(state, target.id)} 的效果被【無懈可擊】抵消。`,
+          );
+          continue;
+        }
+        heal(state, target, 1, '桃園結義');
       }
       break;
     }
@@ -1229,6 +1256,14 @@ function* resolvePlayOption(
       );
       for (const target of turnOrderFrom(state, player.id)) {
         if (!target.alive || revealed.length === 0) continue;
+        if (yield* askNullification(state, use, target.id)) {
+          log(
+            state,
+            'play',
+            `【五穀豐登】對 ${nameOf(state, target.id)} 的效果被【無懈可擊】抵消。`,
+          );
+          continue;
+        }
         const picked = yield* askRevealed(
           state,
           target,
@@ -1585,6 +1620,20 @@ function* resolveFanjian(
       cards: [shown],
       reason: '反間',
     });
+  }
+
+  // 官方：無論猜對與否，目標在【反間】全部結算完畢後獲得這張展示牌。
+  const holderIndex = player.hand.findIndex((card) => card.id === shown.id);
+  if (holderIndex >= 0) {
+    const [card] = player.hand.splice(holderIndex, 1);
+    if (!card) return;
+    if (target.alive) {
+      target.hand.push(card);
+      log(state, 'play', `${nameOf(state, target.id)} 獲得【反間】展示的牌。`);
+    } else {
+      // 目標已死亡時，展示牌進入棄牌堆（官方各版本對死亡時歸屬不同，此為簡化）。
+      pushDiscard(state, [card]);
+    }
   }
 }
 
@@ -2033,11 +2082,21 @@ function getNullificationOptions(player: PlayerState): ResponseOption[] {
  *
  * 回傳 true 表示目標錦囊最終被抵消。每打出一張無懈就從頭重新詢問，
  * 以 LIFO 語意處理「無懈無懈可擊」。最大深度 16。
+ *
+ * 傳入 `targetId` 時只針對該目標開啟窗口（群體錦囊逐目標結算），
+ * 請求中的 `targets` 也會縮成該目標，讓 AI 只評估這名角色的得失。
  */
 function* askNullification(
   state: GameState,
   use: CardUse,
+  targetId?: PlayerId,
 ): Generator<Request, boolean, Response> {
+  const targetName = targetId === undefined ? null : nameOf(state, targetId);
+  const scopedTargets = targetId === undefined ? use.targets : [targetId];
+  const prompt =
+    targetName === null
+      ? `是否對【${useLabel(use)}】使用【無懈可擊】？`
+      : `是否對【${useLabel(use)}】→ ${targetName} 使用【無懈可擊】？`;
   let count = 0;
   while (count < MAX_NULLIFICATION_CHAIN) {
     let played = false;
@@ -2050,12 +2109,12 @@ function* askNullification(
         responder,
         'wuxie',
         options,
-        `是否對【${useLabel(use)}】使用【無懈可擊】？`,
+        prompt,
         '無懈可擊',
         {
           cardName: use.name,
           source: use.source,
-          targets: use.targets,
+          targets: scopedTargets,
           nullificationCount: count,
         },
       );
@@ -2067,7 +2126,9 @@ function* askNullification(
         log(
           state,
           'play',
-          `${nameOf(state, responder.id)} 對【${useLabel(use)}】使用【無懈可擊】（連鎖 ${count}）。`,
+          `${nameOf(state, responder.id)} 對【${useLabel(use)}】${
+            targetName === null ? '' : `（${targetName}）`
+          }使用【無懈可擊】（連鎖 ${count}）。`,
         );
         break;
       }
@@ -2225,21 +2286,22 @@ function* resolveSlashTarget(
     }
   }
 
-  // 流離：成為【殺】目標時，可棄一張牌轉移給攻擊範圍內的一名其他角色。
+  // 流離：成為【殺】目標時，可棄一張牌（手牌或裝備）轉移給攻擊範圍內的一名其他角色。
+  // 官方：棄牌後才重算攻擊範圍，且不可轉移給來源、不可棄判定區的牌。
   if (
     !extra.redirected &&
     !extra.fromWeapon &&
     hasSkill(target, 'liuli') &&
-    hasAnyCard(target)
+    handAndEquips(target).length > 0
   ) {
-    const candidates = state.players.filter(
+    const canOffer = state.players.some(
       (other) =>
         other.alive &&
         other.id !== target.id &&
         other.id !== source.id &&
         inAttackRange(state, target.id, other.id),
     );
-    if (candidates.length > 0) {
+    if (canOffer) {
       const chosen = yield* askResponse(
         state,
         target,
@@ -2255,41 +2317,66 @@ function* resolveSlashTarget(
         '流離',
       );
       if (chosen) {
-        const ids = yield* askCards(
+        const ids = yield* askFrom(
           state,
           target,
-          target.hand.map((card) => card.id),
+          handAndEquips(target),
           1,
           1,
           '流離',
-          '選擇一張牌棄置',
+          '選擇一張牌棄置（手牌或裝備）',
         );
-        discardFromHand(state, target, ids, '流離');
-        checkLianying(state, target);
-        const picked = yield* askPlayers(
-          state,
-          target,
-          candidates.map((other) => other.id),
-          1,
-          1,
-          '流離',
-          '選擇【殺】轉移的目標',
-        );
-        const newTarget = picked[0] === undefined ? null : state.players[picked[0]] ?? null;
-        if (newTarget && newTarget.alive) {
+        const paid = ids[0];
+        if (paid !== undefined) {
+          const removed = removeCardFromPlayer(state, target, paid, true);
+          pushDiscard(state, [removed]);
           log(
             state,
             'play',
-            `${nameOf(state, target.id)} 發動【流離】，將【殺】轉移給 ${nameOf(state, newTarget.id)}。`,
+            `${nameOf(state, target.id)} 發動【流離】，棄置【${cardLabel(removed.name)}】。`,
           );
-          yield* resolveSlashTarget(state, source, newTarget, use, {
-            ...extra,
-            redirected: true,
-            fromWeapon: true,
-            bonus,
-            noDodge,
-          });
-          return;
+          checkLianying(state, target);
+        }
+        // 棄牌後重新計算攻擊範圍（失去武器或坐騎可能縮短範圍）。
+        const candidates = state.players.filter(
+          (other) =>
+            other.alive &&
+            other.id !== target.id &&
+            other.id !== source.id &&
+            inAttackRange(state, target.id, other.id),
+        );
+        if (candidates.length > 0) {
+          const picked = yield* askPlayers(
+            state,
+            target,
+            candidates.map((other) => other.id),
+            1,
+            1,
+            '流離',
+            '選擇【殺】轉移的目標',
+          );
+          const newTarget = picked[0] === undefined ? null : state.players[picked[0]] ?? null;
+          if (newTarget && newTarget.alive) {
+            log(
+              state,
+              'play',
+              `${nameOf(state, target.id)} 發動【流離】，將【殺】轉移給 ${nameOf(state, newTarget.id)}。`,
+            );
+            yield* resolveSlashTarget(state, source, newTarget, use, {
+              ...extra,
+              redirected: true,
+              fromWeapon: true,
+              bonus,
+              noDodge,
+            });
+            return;
+          }
+        } else {
+          log(
+            state,
+            'play',
+            `${nameOf(state, target.id)} 的【流離】在棄牌後已無合法目標，【殺】仍以其為目標。`,
+          );
         }
       }
     }
@@ -2381,7 +2468,10 @@ function* resolveSlashTarget(
   }
 
   // 寒冰劍：造成傷害時，可防止傷害並棄置目標兩張牌。
-  if (!extra.fromWeapon && weapon === 'ice_sword' && hasAnyCard(target)) {
+  // 官方：只能棄置目標的手牌與裝備牌，不可棄判定區的牌；目標有 2 張以上
+  // 必須棄 2 張，只有 1 張時可發動並棄 1 張，沒有牌時不能發動。
+  // 棄牌後若因【連營】、【梟姬】等獲得新牌，仍可繼續棄到第 2 張。
+  if (!extra.fromWeapon && weapon === 'ice_sword' && handAndEquips(target).length > 0) {
     const chosen = yield* askResponse(
       state,
       source,
@@ -2398,18 +2488,21 @@ function* resolveSlashTarget(
       '寒冰劍',
     );
     if (chosen) {
-      const count = Math.min(2, allCardsOf(target).length);
       const discarded: Card[] = [];
-      for (let i = 0; i < count; i += 1) {
+      for (let i = 0; i < 2; i += 1) {
+        if (handAndEquips(target).length === 0) break;
         const card = yield* askCardFrom(
           state,
           source,
           target,
           '寒冰劍',
           `選擇要棄置 ${nameOf(state, target.id)} 的第 ${i + 1} 張牌`,
+          false,
         );
         if (!card) break;
         discarded.push(removeCardFromPlayer(state, target, card.id, true));
+        // 失去最後一張手牌時立即結算【連營】，才能決定是否還要棄第二張。
+        checkLianying(state, target);
       }
       pushDiscard(state, discarded);
       log(
@@ -2417,7 +2510,6 @@ function* resolveSlashTarget(
         'play',
         `${nameOf(state, source.id)} 的【寒冰劍】防止傷害，棄置 ${nameOf(state, target.id)} 的 ${discarded.length} 張牌。`,
       );
-      checkLianying(state, target);
       return;
     }
   }
@@ -3039,7 +3131,9 @@ function* runDying(
   if (dying.hp > 0) return true;
   log(state, 'system', `${nameOf(state, dying.id)} 進入瀕死狀態（體力 ${dying.hp}）。`);
 
-  const order = turnOrderFrom(state, dying.id);
+  // 官方：瀕死求桃從當前回合角色開始，逆時針依序詢問；若當前回合角色已不存在則退回瀕死者。
+  const turnOrder = turnOrderFrom(state, state.turn);
+  const order = turnOrder.length > 0 ? turnOrder : turnOrderFrom(state, dying.id);
   for (const responder of order) {
     if (!responder.alive) continue;
     while (dying.hp <= 0) {
