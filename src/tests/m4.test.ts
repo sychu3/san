@@ -52,8 +52,8 @@ describe('M4 公開事件與身份信念', () => {
     const view = {
       players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null)],
       events: [
-        { seq: 1, kind: 'damage', source: 2, target: 1, amount: 1 },
-        { seq: 2, kind: 'damage', source: 2, target: 1, amount: 1 },
+        { seq: 1, kind: 'damage', source: 2, target: 1, amount: 1, cardName: 'slash' },
+        { seq: 2, kind: 'damage', source: 2, target: 1, amount: 1, cardName: 'slash' },
         { seq: 3, kind: 'save', source: 3, target: 1, cardName: 'peach' },
       ],
     } as unknown as GameView;
@@ -287,8 +287,8 @@ describe('M4 公開事件與身份信念', () => {
         player(4, null),
       ],
       events: [
-        { seq: 1, kind: 'damage', source: 2, target: 0, amount: 1 },
-        { seq: 2, kind: 'damage', source: 2, target: 0, amount: 1 },
+        { seq: 1, kind: 'damage', source: 2, target: 0, amount: 1, cardName: 'slash' },
+        { seq: 2, kind: 'damage', source: 2, target: 0, amount: 1, cardName: 'slash' },
         { seq: 3, kind: 'heal', source: 3, target: 0, skill: 'jieyin', amount: 1 },
         { seq: 4, kind: 'heal', source: 3, target: 0, skill: 'jieyin', amount: 1 },
         { seq: 5, kind: 'heal', source: 4, target: 0, skill: 'jieyin', amount: 1 },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createGame } from '../engine/state';
+import { createGame, discardHandAndEquips } from '../engine/state';
 import { getPlayOptions, runGame } from '../engine/engine';
 import type { Card, GameState, Request, Response } from '../engine/types';
 
@@ -949,5 +949,50 @@ describe('八把武器', () => {
       },
     );
     expect(state.players[1]!.equips.horsePlus).toBeNull();
+  });
+});
+
+describe('主公誤殺忠臣的棄牌範圍', () => {
+  it('主公擊殺忠臣後棄光手牌與裝備，但保留判定區', () => {
+    const state = fresh();
+    state.turn = 1; // 主公（玩家 1）的回合
+    const lord = state.players[1]!;
+    lord.hand = [
+      card(310, 'slash', 'spade', 7),
+      card(311, 'peach', 'heart', 3),
+      card(312, 'dodge', 'diamond', 2),
+    ];
+    lord.equips.weapon = card(313, 'qinggang', 'spade', 6);
+    // 判定區放一張延時錦囊：官方規則下不應被主公誤殺懲罰棄掉。
+    lord.judgeZone = [card(314, 'lightning', 'spade', 1)];
+    state.players[2]!.role = 'loyal';
+    state.players[2]!.hp = 1;
+
+    playAction(state, 1, (option) => option.asCard === 'slash' && option.targets[0] === 2);
+
+    expect(state.players[2]!.alive).toBe(false);
+    expect(lord.hand).toHaveLength(0);
+    expect(lord.equips.weapon).toBeNull();
+    // 閃電判定未命中後會移動到下一名存活角色的判定區，不留在主公身上，
+    // 因此這裡改用直接單元測試驗證判定區的保留（見下一項）。
+  });
+
+  it('discardHandAndEquips 只動手牌與裝備區，保留判定區', () => {
+    const state = createGame({ seed: 5 });
+    const lord = state.players[0]!;
+    lord.hand = [card(320, 'slash', 'spade', 7), card(321, 'peach', 'heart', 3)];
+    lord.equips.weapon = card(322, 'qinggang', 'spade', 6);
+    lord.equips.armor = card(323, 'renwang', 'club', 2);
+    lord.judgeZone = [card(324, 'lightning', 'spade', 1)];
+    const discardedBefore = state.discard.length;
+
+    discardHandAndEquips(state, lord, '主公誤殺忠臣', true);
+
+    expect(lord.hand).toHaveLength(0);
+    expect(lord.equips.weapon).toBeNull();
+    expect(lord.equips.armor).toBeNull();
+    expect(lord.judgeZone).toHaveLength(1);
+    expect(lord.judgeZone[0]!.name).toBe('lightning');
+    expect(state.discard.length).toBe(discardedBefore + 4);
   });
 });

@@ -58,6 +58,11 @@ export interface AiMemory {
   rebelScore: Map<PlayerId, number>;
   /** 死亡時已公開的身份。 */
   knownRole: Map<PlayerId, Role>;
+  /**
+   * 公開擊殺過忠臣的角色（不含主公自己）。擊殺忠臣是強烈的敵意證據，
+   * 但一次只有 +5，未達 6 分門檻，因此另存旗標讓主公能直接斷定其為敵人。
+   */
+  publicKilledLoyal: Set<PlayerId>;
   /** 最近的身份信念變動；只在上帝視角顯示，不影響決策。 */
   beliefNotes: BeliefNote[];
   /** 公開打出過的【閃】／【桃】次數（高手難度的手牌推測）。 */
@@ -81,6 +86,7 @@ export function createAiMemory(): AiMemory {
     lastEventSeq: 0,
     rebelScore: new Map(),
     knownRole: new Map(),
+    publicKilledLoyal: new Set(),
     beliefNotes: [],
     playedDodge: new Map(),
     playedPeach: new Map(),
@@ -188,6 +194,8 @@ function applyEvent(
     if (event.source !== null && event.source !== event.target && event.source !== lordId) {
       if (event.role === 'loyal' || event.role === 'lord') {
         addBelief(memory, event.source, 5, event.seq, `擊殺${ROLE_NOTE_LABELS[event.role]}`);
+        // 擊殺忠臣只加 5 分，未達 6 分門檻；另存旗標，讓主公能直接視其為敵人。
+        if (event.role === 'loyal') memory.publicKilledLoyal.add(event.source);
       } else if (event.role === 'rebel' || event.role === 'spy') {
         addBelief(memory, event.source, -4, event.seq, `擊殺${ROLE_NOTE_LABELS[event.role]}`);
       }
@@ -199,10 +207,14 @@ function applyEvent(
     // 傷害主公＝敵意證據。群體錦囊一定掃到主公，證據力比單體牌弱。
     if (event.target === lordId) {
       const group = event.cardName === 'barbarian' || event.cardName === 'arrows';
+      // 【決鬥】的傷害可能是被【離間】強迫角力的結果，沒有牌名的傷害則多半是
+      // 【剛烈】這類反傷技能；兩者都不是自願的主動敵意，只給微弱證據，
+      // 以免把被動技能反應誤判成反賊（主動出【決鬥】已由 use 事件另行計分）。
+      const ambiguous = event.cardName === 'duel' || event.cardName === undefined;
       addBelief(
         memory,
         event.source,
-        group ? 2 : 4,
+        ambiguous ? 1 : group ? 2 : 4,
         event.seq,
         group ? '群體錦囊對主公造成傷害' : '對主公造成傷害',
       );
@@ -512,22 +524,53 @@ export function beliefsFor(
 }
 
 /**
- * 公開資訊是否足以斷定目標是敵人。
- * 未知不當敵人，也不當隊友；但固定 5 人標準局下，忠臣／內奸可由角色組成
- * 斷定「其他未知非主公」必為敵方（忠臣只有主公是隊友；內奸只有主公，
- * 而且主公要後期才變成敵人）。主公／反賊則只認有公開證據的敵人。
+ * 公開資訊是否足以斷定目標是「已確認敵人」——致命牌與高成本敵意牌只准打這種目標，
+ * 確保不會為了一時收頭或省牌而誤殺可能的隊友。未知不當敵人，也不當隊友；
+ * 但固定 5 人標準局下，各身份都能由公開資訊縮小範圍：
+ * - 忠臣：除主公外全部都是敵人。
+ * - 內奸：除主公（人數 >2 時還要保護）外全部都是敵人。
+ * - 主公：公開敵意分數 ≥6、曾公開擊殺忠臣，或忠臣已死後的所有未知非主公。
+ * - 反賊：主公、公開已知的忠臣／內奸、自己是唯一反賊、公開分數顯示不像反賊，
+ *   或「行為上的另一名反賊隊友已佔住名額」時，其餘不太像反賊的未知非主公。
  */
 function isConfirmedEnemy(view: GameView, self: PlayerView, target: PlayerView): boolean {
   if (target.id === self.id || !target.alive) return false;
   const relation = relationOf(view, self, target);
   if (relation === 'enemy') return true;
   if (relation === 'ally') return false;
-  if (self.role === 'loyal' || self.role === 'spy') return target.role !== 'lord';
+
+  if (self.role === 'loyal') return target.role !== 'lord';
+  if (self.role === 'spy') return true;
+
   if (self.role === 'lord') {
-    // 主公：忠臣已公開死亡後，所有存活的未知非主公都只能是反賊或內奸。
     if (target.role === 'lord') return false;
+    if (activeMemory?.publicKilledLoyal.has(target.id)) return true;
+    // 忠臣已公開死亡後，所有存活的未知非主公都只能是反賊或內奸。
     return remainingRoleCounts(view, self).loyal === 0;
   }
+
+  if (self.role === 'rebel') {
+    if (target.role === 'lord') return true;
+    const counts = remainingRoleCounts(view, self);
+    // 另一名反賊已公開死亡：自己就是唯一反賊，其餘非主公必為忠臣／內奸。
+    if (counts.rebel === 0) return true;
+    const score = activeMemory?.rebelScore.get(target.id) ?? 0;
+    // 公開行為顯示此人不像反賊（例如攻擊過反賊），可視為敵人。
+    if (score <= ALLY_EVIDENCE) return true;
+    // 自己仍有 6 分以上的反賊嫌疑時，他可能就是另一名反賊，保留為未知。
+    if (score >= TEAMMATE_EVIDENCE) return false;
+    // 行為上的隊友只能佔一個反賊名額。若已有一名行為盟友佔住名額，
+    // 其餘不太像反賊的未知非主公就不再可能是反賊，可視為敵人。
+    return view.players.some(
+      (player) =>
+        player.alive &&
+        player.id !== self.id &&
+        player.id !== target.id &&
+        player.role !== 'lord' &&
+        relationOf(view, self, player) === 'ally',
+    );
+  }
+
   return false;
 }
 
@@ -617,6 +660,106 @@ function slashBonusMatters(
   const boosted = slashDamageWith(self, target, option, bonus);
   // 加傷要真的提升傷害，而且目標不是本來就會被基礎傷害帶走。
   return boosted > base && target.hp > base;
+}
+
+/** 本回合是否已發動【裸衣】（傷害 +1）。 */
+function luoyiActive(view: GameView): boolean {
+  return Boolean(activeMemory && activeMemory.luoyiTurn === view.turnCount);
+}
+
+/**
+ * 一張主動牌對目標可能造成的「直接」傷害；null 表示打不中或本身不造成傷害。
+ * 這只是傷害上限估計：真實在【閃】、【決鬥】角力後可能更低，但用來避免誤殺足夠。
+ */
+function directDamageEstimate(
+  self: PlayerView,
+  target: PlayerView,
+  option: { asCard?: CardName; nature?: Nature; cards?: number[]; skill?: string },
+  luoyi: boolean,
+): number | null {
+  const name = option.asCard;
+  const ignoreArmor = self.equips.weapon?.name === 'qinggang';
+  if (isSlashOption(option)) {
+    if (!slashIsEffective(self, target, option)) return null;
+    let damage = 1;
+    // 藤甲遇火【殺】額外 +1（朱雀羽扇把普通【殺】轉成火【殺】時已是 fire_slash）。
+    if (!ignoreArmor && option.asCard === 'fire_slash' && target.equips.armor?.name === 'vine_armor') {
+      damage += 1;
+    }
+    if (self.wine) damage += 1;
+    if (luoyi) damage += 1;
+    // 古錠刀：目標沒有手牌時 +1。
+    if (self.equips.weapon?.name === 'ancient_scimitar' && target.handCount === 0) damage += 1;
+    if (!ignoreArmor && target.equips.armor?.name === 'silver_lion' && damage > 1) damage = 1;
+    return damage;
+  }
+  if (name === 'duel') {
+    if (target.skills.includes('kongcheng') && target.handCount === 0) return null;
+    let damage = 1 + (luoyi ? 1 : 0);
+    if (target.equips.armor?.name === 'silver_lion' && damage > 1) damage = 1;
+    return damage;
+  }
+  if (name === 'fire_attack') {
+    let damage = 1;
+    if (target.equips.armor?.name === 'vine_armor') damage += 1;
+    if (target.equips.armor?.name === 'silver_lion' && damage > 1) damage = 1;
+    return damage;
+  }
+  if (name === 'barbarian' || name === 'arrows') {
+    if (target.equips.armor?.name === 'vine_armor') return null;
+    return 1;
+  }
+  return null;
+}
+
+/**
+ * 這張主動牌可能直接、或因【鐵索連環】傳導而擊殺的角色清單。
+ * 涵蓋單體傷害、群體錦囊、屬性傷害傳導、藤甲、白銀獅子、酒、裸衣、古錠刀、
+ * 朱雀羽扇（轉火殺）與方天畫戟（多目標已列在 option.targets）。
+ */
+function lethalVictims(view: GameView, self: PlayerView, option: PlayOption): PlayerView[] {
+  const victims: PlayerView[] = [];
+  if (option.kind !== 'play') return victims;
+  const luoyi = luoyiActive(view);
+  const name = option.asCard;
+  const nature: Nature =
+    option.nature ?? (name === 'fire_attack' ? 'fire' : name ? slashNature(name) : 'normal');
+  const canChain = (isSlashOption(option) || name === 'fire_attack') && nature !== 'normal';
+  const ignoreArmor = self.equips.weapon?.name === 'qinggang';
+
+  const add = (player: PlayerView): void => {
+    if (!victims.includes(player)) victims.push(player);
+  };
+
+  for (const id of option.targets) {
+    const target = view.players[id];
+    if (!target || target.id === self.id || !target.alive) continue;
+    const damage = directDamageEstimate(self, target, option, luoyi);
+    if (damage === null || damage <= 0) continue;
+    if (target.hp <= damage) add(target);
+    if (!canChain || !target.chained) continue;
+    // 鐵索連環：同一連鎖中的橫置角色會受到同樣的屬性傷害。
+    for (const other of view.players) {
+      if (other.id === target.id || !other.alive || !other.chained) continue;
+      let otherDamage = damage;
+      if (!ignoreArmor && nature === 'fire' && other.equips.armor?.name === 'vine_armor') otherDamage += 1;
+      if (!ignoreArmor && other.equips.armor?.name === 'silver_lion' && otherDamage > 1) otherDamage = 1;
+      if (other.hp <= otherDamage) add(other);
+    }
+  }
+  return victims;
+}
+
+/** 這張主動牌是否可能令某名「非已確認敵人」死亡。 */
+function hasUnconfirmedLethalVictim(view: GameView, self: PlayerView, option: PlayOption): boolean {
+  return lethalVictims(view, self, option).some(
+    (victim) => !isConfirmedEnemy(view, self, victim),
+  );
+}
+
+/** 【酒】／【裸衣】加持下的【殺】：屬於高成本打擊，只准打已確認敵人。 */
+function isBoostedSlash(view: GameView, self: PlayerView, option: PlayOption): boolean {
+  return isSlashOption(option) && (self.wine || luoyiActive(view));
 }
 
 /** 目標是否全部都是公開資訊足以斷定的敵人。 */
@@ -916,10 +1059,14 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
         if (self.role === 'loyal') continue;
         if (self.role === 'spy' && alive > 2) continue;
       }
-      // 主公所有回合：高成本單體敵意牌只打公開資訊足以斷定的敵人。
-      if (self.role === 'lord' && isHighCostHostile(option) && !targetsAllConfirmed(view, self, option)) {
-        continue;
-      }
+      // L1 致命閘：任何主動牌只要可能令「非已確認敵人」死亡（含鐵索連環傳導、
+      // 群體錦囊、藤甲／白銀獅子、酒、裸衣、古錠刀等）就放棄，避免為收頭誤殺隊友。
+      if (hasUnconfirmedLethalVictim(view, self, option)) continue;
+      // L2 高成本閘（所有身份）：需要投入多張資源或高風險的敵意牌，
+      // 只打公開資訊足以斷定的敵人，不在未知目標身上浪費。
+      if (isHighCostHostile(option) && !targetsAllConfirmed(view, self, option)) continue;
+      // 酒／裸衣加持的【殺】同屬高成本打擊，只打已確認敵人。
+      if (isBoostedSlash(view, self, option) && !targetsAllConfirmed(view, self, option)) continue;
       // 主公第一回合：普通【殺】最多一張試探；其他敵意牌只打 confirmed。
       if (
         isLordFirstTurn(view, self) &&

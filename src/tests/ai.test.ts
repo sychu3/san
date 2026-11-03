@@ -1594,3 +1594,306 @@ describe('反賊焦點與主公保護', () => {
     });
   });
 });
+
+describe('致命閘與高成本閘（各身份）', () => {
+  function actionRequest(player: number, options: PlayOption[]): Request {
+    return {
+      id: 900,
+      player,
+      prompt: '出牌階段：請選擇行動',
+      kind: 'action',
+      options,
+      context: '出牌階段',
+    };
+  }
+
+  const passOption: PlayOption = {
+    id: 'pass',
+    label: '結束出牌階段',
+    kind: 'pass',
+    cards: [],
+    targets: [],
+  };
+
+  /** 建立一局乾淨的測試狀態，並指定各座位身份。 */
+  function setup(roles: Array<'lord' | 'loyal' | 'rebel' | 'spy'>): GameState {
+    const state = fresh();
+    state.turnCount = 2;
+    state.publicEvents = [];
+    state.players.forEach((player, index) => {
+      player.role = roles[index] ?? 'loyal';
+      player.hp = 4;
+      player.maxHp = 4;
+      player.alive = true;
+      player.chained = false;
+      player.wine = false;
+      player.hand = [];
+      player.judgeZone = [];
+      player.equips = { weapon: null, armor: null, horsePlus: null, horseMinus: null };
+    });
+    return state;
+  }
+
+  function slashOption(id: string, targets: number[], extra: Partial<PlayOption> = {}): PlayOption {
+    return { id, label: id, kind: 'play', cards: [9901], targets, asCard: 'slash', ...extra };
+  }
+
+  it('反賊：行為盟友佔住反賊名額後，其餘未知非主公視為已確認敵人', () => {
+    const state = setup(['rebel', 'lord', 'loyal', 'loyal', 'loyal']);
+    state.players[3]!.hp = 1;
+    const option = slashOption('slash:3', [3]);
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    // 沒有行為盟友時，未知目標不是已確認敵人，致命【殺】被閘門擋下。
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    // 玩家 2 行為上像另一名反賊（分數 8），佔住反賊名額 → 玩家 3 不再可能是反賊。
+    const memory = createAiMemory();
+    memory.rebelScore.set(2, 8);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:3',
+    });
+  });
+
+  it('反賊不會對行為盟友（佔位的另一名反賊）使用致命【殺】', () => {
+    const state = setup(['rebel', 'lord', 'loyal', 'loyal', 'loyal']);
+    state.players[2]!.hp = 1;
+    const option = slashOption('slash:2', [2]);
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    const memory = createAiMemory();
+    memory.rebelScore.set(2, 8);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('主公：曾公開擊殺忠臣的目標直接視為已確認敵人', () => {
+    const state = setup(['lord', 'loyal', 'rebel', 'rebel', 'spy']);
+    state.players[3]!.hp = 1;
+    const option = slashOption('slash:3', [3]);
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    // 沒有紀錄時，hp1 的未知目標不是已確認敵人，致命【殺】被擋下。
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    const memory = createAiMemory();
+    memory.publicKilledLoyal.add(3);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:3',
+    });
+  });
+
+  it('主公：忠臣已公開死亡後，其餘未知非主公皆視為已確認敵人', () => {
+    const state = setup(['lord', 'loyal', 'loyal', 'rebel', 'spy']);
+    state.players[3]!.hp = 1;
+    state.publicEvents = [{ seq: 1, kind: 'death', source: null, target: 1, role: 'loyal' }];
+    const option = slashOption('slash:3', [3]);
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:3',
+    });
+  });
+
+  it('致命閘：屬性【殺】經鐵索傳導可能誤殺非敵人時不使用', () => {
+    const state = setup(['lord', 'loyal', 'loyal', 'rebel', 'spy']);
+    state.players[2]!.hp = 1;
+    state.players[2]!.chained = true;
+    state.players[3]!.hp = 4;
+    state.players[3]!.chained = true;
+    const option = slashOption('fire:3', [3], { asCard: 'fire_slash', nature: 'fire' });
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    const memory = createAiMemory();
+    memory.rebelScore.set(3, 8); // 玩家 3 是已確認敵人，但玩家 2 未知且會被連環帶走。
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    // 解除玩家的連環狀態後，不再有非敵人會被傳導傷害帶走。
+    state.players[2]!.chained = false;
+    const safeMemory = createAiMemory();
+    safeMemory.rebelScore.set(3, 8);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, safeMemory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'fire:3',
+    });
+  });
+
+  it('致命閘：火【殺】對藤甲目標 +1，未確認的 hp2 目標不放行', () => {
+    const state = setup(['lord', 'loyal', 'loyal', 'rebel', 'spy']);
+    state.players[3]!.hp = 2;
+    state.players[3]!.equips.armor = card(9902, 'vine_armor', 'spade', 2);
+    const option = slashOption('fire:3', [3], { asCard: 'fire_slash', nature: 'fire' });
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    // 火【殺】1 + 藤甲 1 = 2 ≥ hp2 → 視為致命，未知目標不放行。
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    // hp3 時同一下不會致命，回復成可試探的低成本【殺】。
+    state.players[3]!.hp = 3;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'fire:3',
+    });
+  });
+
+  it('致命閘：白銀獅子封頂加傷，避免把非致命誤判為致命', () => {
+    const state = setup(['lord', 'loyal', 'loyal', 'rebel', 'spy']);
+    state.players[0]!.equips.weapon = card(9903, 'ancient_scimitar', 'spade', 1);
+    state.players[3]!.hp = 2;
+    state.players[3]!.equips.armor = card(9904, 'silver_lion', 'spade', 2);
+    const option = slashOption('slash:3', [3]);
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    // 古錠刀 +1 但白銀獅子封頂回 1，hp2 不致命 → 可試探。
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:3',
+    });
+
+    // 沒有白銀獅子：古錠刀令傷害變 2，hp2 會被帶走 → 擋下。
+    state.players[3]!.equips.armor = null;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('酒／裸衣加持的【殺】只打已確認敵人', () => {
+    const state = setup(['lord', 'loyal', 'loyal', 'rebel', 'spy']);
+    state.players[3]!.hp = 3;
+    state.players[0]!.wine = true;
+    const option = slashOption('slash:3', [3]);
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    const memory = createAiMemory();
+    memory.rebelScore.set(3, 8); // 已確認敵人時才可用酒殺。
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:3',
+    });
+
+    // 【裸衣】同理：加傷當回合只打已確認敵人。
+    state.players[0]!.wine = false;
+    const luoyiMemory = createAiMemory();
+    luoyiMemory.luoyiTurn = state.turnCount;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, luoyiMemory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('方天畫戟多目標：其中一名非敵人會被致命時不使用', () => {
+    const state = setup(['lord', 'loyal', 'loyal', 'rebel', 'spy']);
+    state.players[2]!.hp = 1;
+    state.players[3]!.hp = 4;
+    const option = slashOption('slash:2+3', [2, 3]);
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    const memory = createAiMemory();
+    memory.rebelScore.set(3, 8);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    state.players[2]!.hp = 4;
+    const safeMemory = createAiMemory();
+    safeMemory.rebelScore.set(3, 8);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, safeMemory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:2+3',
+    });
+  });
+
+  it('高成本閘推廣到反賊：只打已確認敵人，不在未知身上浪費【火攻】', () => {
+    const state = setup(['rebel', 'lord', 'loyal', 'loyal', 'loyal']);
+    const option: PlayOption = {
+      id: 'fire_attack:3',
+      label: '火攻',
+      kind: 'play',
+      cards: [9905],
+      targets: [3],
+      asCard: 'fire_attack',
+    };
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    // 分數 −2：不像反賊（敵意略高），但未達已確認門檻（≤−6），高成本【火攻】被擋。
+    const memory = createAiMemory();
+    memory.rebelScore.set(3, -2);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    // 分數 −8：公開行為足以斷定不是反賊 → 已確認敵人，可用高成本牌。
+    const confirmed = createAiMemory();
+    confirmed.rebelScore.set(3, -8);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, confirmed, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'fire_attack:3',
+    });
+  });
+
+  it('高成本【離間】要求兩名目標都是已確認敵人', () => {
+    const state = setup(['lord', 'loyal', 'rebel', 'rebel', 'spy']);
+    const option: PlayOption = {
+      id: 'lijian:2:3',
+      label: '離間',
+      kind: 'play',
+      cards: [],
+      targets: [2, 3],
+      skill: 'lijian',
+    };
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    // 只有玩家 2 是已確認敵人時不使用。
+    const half = createAiMemory();
+    half.rebelScore.set(2, 8);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, half, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    // 兩名都是已確認敵人時可用。
+    const both = createAiMemory();
+    both.rebelScore.set(2, 8);
+    both.rebelScore.set(3, 8);
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, both, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'lijian:2:3',
+    });
+  });
+});

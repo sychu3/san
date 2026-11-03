@@ -15,9 +15,9 @@ interface Selection {
 }
 
 const RELATION_LABELS: Record<string, string> = {
-  ally: '友',
-  enemy: '敵',
-  unknown: '?',
+  ally: '偏友',
+  enemy: '偏敵',
+  unknown: '未知',
 };
 
 function scoreText(score: number): string {
@@ -74,7 +74,8 @@ export function BeliefPanel({ view, beliefs, humanId }: Props) {
       <div className="beliefs__head">
         <span className="beliefs__title">AI 身份推理</span>
         <span className="beliefs__hint">
-          數字＝公開事件推得的「像反賊」程度（−20～+20）；敵／友是各 AI 目前的判斷
+          數字＝公開事件推得的「像反賊」程度（−20～+20）；偏友／偏敵／未知是各 AI 目前的判斷。
+          偏友可能其實是忠臣或內奸，行為信任不等於確定身份。
         </span>
       </div>
 

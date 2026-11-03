@@ -24,6 +24,7 @@ import {
   currentPlayer,
   discardAllCards,
   discardFromHand,
+  discardHandAndEquips,
   drawCards,
   generalOf,
   handAndEquips,
@@ -3302,8 +3303,9 @@ function* killPlayer(
         drawCards(state, killer, 3);
       }
       if (victim.role === 'loyal' && killer.role === 'lord') {
-        log(state, 'system', `主公 ${nameOf(state, killer.id)} 誤殺忠臣，棄置所有牌。`);
-        discardAllCards(state, killer, '主公誤殺忠臣', true);
+        log(state, 'system', `主公 ${nameOf(state, killer.id)} 誤殺忠臣，棄置所有手牌與裝備牌。`);
+        // 官方規則：只棄手牌與裝備，判定區的延時錦囊不受影響。
+        discardHandAndEquips(state, killer, '主公誤殺忠臣', true);
       }
     }
   }

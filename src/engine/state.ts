@@ -266,6 +266,25 @@ export function discardAllCards(
   discardCards(state, removed, reason);
 }
 
+/**
+ * 棄置手牌與裝備區的牌（不含判定區）。
+ * 官方規則的「主公誤殺忠臣，棄置所有手牌和裝備牌」只能動這兩區，
+ * 判定區的延時錦囊不受影響。
+ */
+export function discardHandAndEquips(
+  state: GameState,
+  player: PlayerState,
+  reason: string,
+  triggerLoss = true,
+): void {
+  const ids = handAndEquips(player).map((card) => card.id);
+  const removed: Card[] = [];
+  for (const id of ids) {
+    removed.push(removeCardFromPlayer(state, player, id, triggerLoss));
+  }
+  discardCards(state, removed, reason);
+}
+
 export function discardFromHand(
   state: GameState,
   player: PlayerState,

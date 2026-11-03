@@ -194,3 +194,79 @@ describe('AI 不會把技能與牌指向可判定的隊友', () => {
     expect(violations, summary).toEqual([]);
   }, 30_000);
 });
+
+/** 友軍互相傷害：這些組合只有在被敵方【離間】／【借刀殺人】強迫時才可接受。 */
+const FRIENDLY_PAIRS = new Set<string>(['lord->loyal', 'loyal->lord', 'rebel->rebel']);
+
+/**
+ * 掃描指定 seed，找出「非被強迫」的主動友軍死亡。
+ * 強迫判斷沿用公開日誌：死亡前的近期紀錄出現【離間】或【借刀殺人】。
+ */
+function scanProactiveFriendlyKills(seeds: readonly number[]): Violation[] {
+  const violations: Violation[] = [];
+  for (const seed of seeds) {
+    const state = createGame({ seed });
+    const generator = runGame(state);
+    const rng = { rngState: (state.seed ^ 0x85ebca6b) >>> 0 || 1 };
+    const memories = new Map<PlayerId, AiMemory>();
+    let seen = 0;
+    let step = generator.next();
+    let guard = 0;
+    while (!step.done && guard < 400_000) {
+      guard += 1;
+      const request: Request = step.value;
+      let memory = memories.get(request.player);
+      if (!memory) {
+        memory = createAiMemory();
+        memories.set(request.player, memory);
+      }
+      const response: Response = decide(
+        viewFor(state, request.player),
+        request,
+        rng,
+        memory,
+        'normal',
+      );
+      step = generator.next(response);
+
+      const newEvents = state.publicEvents.slice(-(state.eventSeq - seen));
+      for (const event of newEvents) {
+        if (event.seq <= seen) continue;
+        seen = event.seq;
+        if (
+          event.kind !== 'death' ||
+          event.source === null ||
+          event.target === null ||
+          event.source === event.target
+        ) {
+          continue;
+        }
+        const key = `${state.players[event.source]!.role}->${state.players[event.target]!.role}`;
+        if (!FRIENDLY_PAIRS.has(key)) continue;
+        const recent = state.log.slice(-16).map((entry) => entry.text).join('\n');
+        const forced = recent.includes('離間') || recent.includes('借刀');
+        if (!forced) violations.push({ seed, what: `主動誤殺（${key}）` });
+      }
+    }
+  }
+  return violations;
+}
+
+describe('AI 不會主動誤殺隊友（致命／高成本閘）', () => {
+  it('1–150 局與指定回歸 seed：主動友軍死亡為 0', () => {
+    const seeds = [
+      ...Array.from({ length: 150 }, (_, index) => index + 1),
+      21,
+      22,
+      24,
+      1391137374,
+      3668092673,
+    ];
+    const violations = scanProactiveFriendlyKills(seeds);
+    const summary = violations
+      .slice(0, 10)
+      .map((item) => `seed ${item.seed} ${item.what}`)
+      .join('\n');
+    expect(violations, summary).toEqual([]);
+  }, 60_000);
+});
