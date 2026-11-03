@@ -1333,6 +1333,42 @@ function luoyiHasValue(view: GameView, self: PlayerView): boolean {
   );
 }
 
+/** 【貫石斧】可棄的牌數：手牌＋裝備，排除貫石斧本身。 */
+function rockAxeDiscardableCount(self: PlayerView): number {
+  const handCount = self.hand?.length ?? self.handCount;
+  const usable = [self.equips.weapon, self.equips.armor, self.equips.horsePlus, self.equips.horseMinus].filter(
+    (card): card is Card => card !== null && card.name !== 'rock_axe',
+  ).length;
+  return handCount + usable;
+}
+
+/**
+ * 【反間】猜花色：只依自己的手牌推測未見牌的分佈。
+ * 自己手上越少的花色，越可能出現在周瑜的未知手牌裡；同分用隨機決定，
+ * 避免每次固定猜同一個花色。
+ */
+function chooseFanjianSuit(
+  self: PlayerView,
+  options: { id: string; skill?: string }[],
+  rng: RngState,
+): { id: string; skill?: string } | null {
+  const counts = new Map<string, number>([
+    ['spade', 0],
+    ['heart', 0],
+    ['club', 0],
+    ['diamond', 0],
+  ]);
+  for (const card of self.hand ?? []) {
+    counts.set(card.suit, (counts.get(card.suit) ?? 0) + 1);
+  }
+  const scored = options.map((option) => {
+    const suit = String(option.skill ?? '').replace('suit_', '');
+    return { option, count: counts.get(suit) ?? 0, jitter: nextFloat(rng) };
+  });
+  scored.sort((a, b) => a.count - b.count || a.jitter - b.jitter);
+  return scored[0]?.option ?? null;
+}
+
 function chooseResponse(
   view: GameView,
   request: Request & { kind: 'response' },
@@ -1465,6 +1501,14 @@ function chooseResponse(
       // 雌雄雙股劍：手牌少就讓對方摸，手牌多就棄一張。
       return { type: 'option', optionId: (self.handCount <= 2 && draw ? draw : discard ?? draw)!.id };
     }
+    // 反間猜花色：依未見牌分佈挑最可能的花色。
+    const suitOptions = skills.filter(
+      (option) => typeof option.skill === 'string' && option.skill.startsWith('suit_'),
+    );
+    if (suitOptions.length > 0) {
+      const best = chooseFanjianSuit(self, suitOptions, rng);
+      if (best) return { type: 'option', optionId: best.id };
+    }
     const skill = skills[0];
     if (skill) {
       const id = skill.skill;
@@ -1484,17 +1528,15 @@ function chooseResponse(
         return { type: 'option', optionId: skill.id };
       }
       if (id === 'rock_axe') {
-        if (self.handCount < 2) {
-          return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
-        }
         const axeTargetId = skill.targets?.[0];
         const axeTarget = axeTargetId === undefined ? null : view.players[axeTargetId] ?? null;
-        // 白銀獅子會把 +1 傷害封頂，沒有青釭劍時不值得棄兩張牌。
-        if (axeTarget?.equips.armor?.name === 'silver_lion' && self.equips.weapon?.name !== 'qinggang') {
-          return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
-        }
-        // 主公第一回合不要把額外資源灌在未知目標上。
-        if (isLordFirstTurn(view, self) && axeTarget && !isConfirmedEnemy(view, self, axeTarget)) {
+        // 官方版：被【閃】抵消後才觸發；只對已確認敵人動用，且要湊得出兩張可棄的牌。
+        if (
+          !axeTarget ||
+          !axeTarget.alive ||
+          !isConfirmedEnemy(view, self, axeTarget) ||
+          rockAxeDiscardableCount(self) < 2
+        ) {
           return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
         }
       }
@@ -1765,6 +1807,11 @@ export function decide(
       return best ? { type: 'card', card: best.id } : { type: 'pass' };
     }
     case 'chooseFrom': {
+      // 貫石斧：從手牌＋裝備中挑價值最低的牌支付。
+      if (request.reason === '貫石斧') {
+        const ranked = [...request.cards].sort((a, b) => cardValue(a.name) - cardValue(b.name));
+        return { type: 'cards', cards: ranked.slice(0, request.min).map((card) => card.id) };
+      }
       // 觀星等：預設保留牌堆頂順序（不移動）。
       return { type: 'cards', cards: request.cards.slice(0, request.min).map((card) => card.id) };
     }

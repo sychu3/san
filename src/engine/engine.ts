@@ -2164,48 +2164,9 @@ function* resolveSlashTarget(
   if (!target.alive || !source.alive) return;
 
   const weapon = source.equips.weapon?.name;
-  let bonus = extra.bonus ?? 0;
+  const bonus = extra.bonus ?? 0;
   let noDodge = extra.noDodge ?? false;
   const ignoreArmor = extra.ignoreArmor ?? weapon === 'qinggang';
-  // 防具已可判定此【殺】無效時，不要詢問貫石斧（AI 在回應時看不到【殺】的顏色／屬性）。
-  const armorBlocksSlash =
-    !ignoreArmor &&
-    ((target.equips.armor?.name === 'renwang' && isBlack(use.card)) ||
-      (target.equips.armor?.name === 'vine_armor' && use.nature === 'normal'));
-
-  // 貫石斧：使用【殺】時可棄兩張手牌，令此【殺】不可被【閃】抵消且傷害 +1。
-  if (!extra.fromWeapon && weapon === 'rock_axe' && source.hand.length >= 2 && !armorBlocksSlash) {
-    const chosen = yield* askResponse(
-      state,
-      source,
-      'choice',
-      [{
-        id: 'rock_axe',
-        label: '貫石斧：棄置 2 張手牌，令此【殺】不可被【閃】抵消且傷害 +1',
-        kind: 'skill',
-        cards: [],
-        skill: 'rock_axe',
-        targets: [target.id],
-      }],
-      '是否發動【貫石斧】？',
-      '貫石斧',
-    );
-    if (chosen) {
-      const discarded = yield* askCards(
-        state,
-        source,
-        source.hand.map((card) => card.id),
-        2,
-        2,
-        '貫石斧',
-        '棄置 2 張手牌',
-      );
-      discardFromHand(state, source, discarded, '貫石斧');
-      bonus += 1;
-      noDodge = true;
-      log(state, 'play', `${nameOf(state, source.id)} 發動【貫石斧】，此【殺】不可被【閃】抵消且傷害 +1。`);
-    }
-  }
 
   // 雌雄雙股劍：指定異性目標時，令其選擇棄一張手牌或讓來源摸一張。
   if (
@@ -2462,8 +2423,60 @@ function* resolveSlashTarget(
             }
           }
         }
+        return;
       }
-      return;
+
+      // 貫石斧：被【閃】抵消時，可棄兩張牌（手牌或裝備，不含貫石斧本身），
+      // 令此【殺】依然造成傷害。
+      if (!extra.fromWeapon && weapon === 'rock_axe') {
+        const discardable = handAndEquips(source).filter(
+          (card) => card.id !== source.equips.weapon?.id,
+        );
+        if (discardable.length >= 2) {
+          const chosen = yield* askResponse(
+            state,
+            source,
+            'choice',
+            [{
+              id: 'rock_axe',
+              label: '貫石斧：棄置 2 張牌，令此【殺】依然造成傷害',
+              kind: 'skill',
+              cards: [],
+              skill: 'rock_axe',
+              targets: [target.id],
+            }],
+            '是否發動【貫石斧】？',
+            '貫石斧',
+          );
+          if (chosen) {
+            const ids = yield* askFrom(
+              state,
+              source,
+              discardable,
+              2,
+              2,
+              '貫石斧',
+              '選擇兩張牌棄置（手牌或裝備，不含貫石斧）',
+            );
+            const removed: Card[] = [];
+            for (const id of ids) removed.push(removeCardFromPlayer(state, source, id, true));
+            pushDiscard(state, removed);
+            checkLianying(state, source);
+            log(
+              state,
+              'play',
+              `${nameOf(state, source.id)} 發動【貫石斧】，棄置 ${removed.length} 張牌，此【殺】依然造成傷害。`,
+            );
+            // 繼續往下結算傷害。
+          } else {
+            return;
+          }
+        } else {
+          return;
+        }
+      } else {
+        return;
+      }
     }
   }
 

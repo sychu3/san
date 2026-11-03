@@ -767,7 +767,7 @@ describe('八把武器', () => {
     expect(handOf(state, 1)).toHaveLength(0);
   });
 
-  it('貫石斧棄兩張手牌造成 +1 傷害且不可被閃', () => {
+  it('貫石斧：被【閃】抵消後棄兩張牌，令【殺】依然造成傷害', () => {
     const state = fresh();
     state.players[0]!.equips.weapon = card(230, 'rock_axe', 'diamond', 5);
     state.players[0]!.hand = [
@@ -781,15 +781,84 @@ describe('八把武器', () => {
       0,
       (option) => option.asCard === 'slash' && option.targets[0] === 1,
       (request) => {
+        if (request.kind === 'response' && request.need === 'shan' && request.player === 1) {
+          const dodge = request.options.find((item) => item.asCard === 'dodge');
+          if (dodge) return { type: 'option', optionId: dodge.id };
+        }
         if (request.kind === 'response' && request.need === 'choice' && request.player === 0) {
           const skill = request.options.find((option) => option.skill === 'rock_axe');
           if (skill) return { type: 'option', optionId: skill.id };
         }
+        if (request.kind === 'chooseFrom' && request.reason === '貫石斧') {
+          return { type: 'cards', cards: request.cards.slice(0, request.min).map((item) => item.id) };
+        }
         return baseline(request);
       },
     );
-    expect(state.players[1]!.hp).toBe(3);
+    // 官方版沒有 +1 傷害：命中後只造成 1 點。
+    expect(state.players[1]!.hp).toBe(4);
     expect(handOf(state, 0)).toHaveLength(2);
+  });
+
+  it('貫石斧不會在【殺】直接命中時詢問', () => {
+    const state = fresh();
+    state.players[0]!.equips.weapon = card(244, 'rock_axe', 'diamond', 5);
+    state.players[0]!.hand = [
+      card(245, 'slash', 'spade', 8),
+      card(246, 'dodge', 'heart', 2),
+      card(247, 'peach', 'heart', 5),
+    ];
+    let sawRockAxe = false;
+    playAction(
+      state,
+      0,
+      (option) => option.asCard === 'slash' && option.targets[0] === 1,
+      (request) => {
+        if (
+          request.kind === 'response' &&
+          request.need === 'choice' &&
+          request.options.some((option) => option.skill === 'rock_axe')
+        ) {
+          sawRockAxe = true;
+        }
+        return baseline(request);
+      },
+    );
+    expect(sawRockAxe).toBe(false);
+    expect(state.players[1]!.hp).toBe(4);
+  });
+
+  it('貫石斧可以棄置裝備區的牌（不含貫石斧本身）', () => {
+    const state = fresh();
+    state.players[0]!.equips.weapon = card(250, 'rock_axe', 'diamond', 5);
+    state.players[0]!.equips.armor = card(251, 'eight_diagram', 'spade', 2);
+    state.players[0]!.hand = [card(252, 'slash', 'spade', 8)];
+    state.players[1]!.hand = [card(253, 'dodge', 'diamond', 6)];
+
+    playAction(
+      state,
+      0,
+      (option) => option.asCard === 'slash' && option.targets[0] === 1,
+      (request) => {
+        if (request.kind === 'response' && request.need === 'shan' && request.player === 1) {
+          const dodge = request.options.find((item) => item.asCard === 'dodge');
+          if (dodge) return { type: 'option', optionId: dodge.id };
+        }
+        if (request.kind === 'response' && request.need === 'choice' && request.player === 0) {
+          const skill = request.options.find((option) => option.skill === 'rock_axe');
+          if (skill) return { type: 'option', optionId: skill.id };
+        }
+        if (request.kind === 'chooseFrom' && request.reason === '貫石斧') {
+          const armor = request.cards.find((item) => item.name === 'eight_diagram');
+          const other = request.cards.find((item) => item.id !== armor?.id);
+          const picked = [armor, other].filter((item): item is Card => Boolean(item));
+          return { type: 'cards', cards: picked.map((item) => item.id) };
+        }
+        return baseline(request);
+      },
+    );
+    expect(state.players[0]!.equips.armor).toBeNull();
+    expect(state.players[1]!.hp).toBe(4);
   });
 
   it('貫石斧不會對藤甲普通【殺】詢問（避免浪費兩張手牌）', () => {

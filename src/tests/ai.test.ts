@@ -159,6 +159,42 @@ describe('AI 拆牌判斷', () => {
     expect(countPlays(view, request)).toBeGreaterThan(0);
   });
 
+  it('反間猜花色：避開自己手上最多的花色', () => {
+    const state = fresh();
+    state.players[0]!.hand = [
+      card(9300, 'slash', 'spade'),
+      card(9301, 'dodge', 'spade'),
+      card(9302, 'peach', 'spade'),
+      card(9303, 'dodge', 'heart'),
+    ];
+    const options: ResponseOption[] = [
+      { id: 'suit:spade', label: '猜 黑桃', kind: 'skill', cards: [], skill: 'suit_spade' },
+      { id: 'suit:heart', label: '猜 紅桃', kind: 'skill', cards: [], skill: 'suit_heart' },
+      { id: 'suit:club', label: '猜 梅花', kind: 'skill', cards: [], skill: 'suit_club' },
+      { id: 'suit:diamond', label: '猜 方塊', kind: 'skill', cards: [], skill: 'suit_diamond' },
+      { id: 'pass', label: '不出', kind: 'pass', cards: [] },
+    ];
+    const request: Request = {
+      id: 30,
+      player: 0,
+      prompt: '反間：請猜一張花色',
+      kind: 'response',
+      need: 'choice',
+      options,
+      context: '反間',
+      source: 1,
+      targets: [0],
+    };
+    state.pending = request;
+    const view = viewFor(state, 0);
+
+    for (let rngState = 1; rngState <= 20; rngState += 1) {
+      const response = decide(view, request, { rngState });
+      expect(response.type).toBe('option');
+      if (response.type === 'option') expect(response.optionId).not.toBe('suit:spade');
+    }
+  });
+
   function actionRequest(player: number, options: PlayOption[]): Request {
     return {
       id: 20,
