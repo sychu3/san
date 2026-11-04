@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createAiMemory, decide, updateMemory } from '../ai/policy';
+import { beliefProbs, createAiMemory, decide, seedBeliefScore, updateMemory } from '../ai/policy';
 import { createGame, viewFor } from '../engine/state';
 import { getPlayOptions, runGame } from '../engine/engine';
 import type {
@@ -638,14 +638,19 @@ describe('技能與牌只對合理目標使用', () => {
       { seq: 2, kind: 'use', source: 3, target: 1, cardName: 'slash' },
     ];
     const memory = createAiMemory();
-    updateMemory(viewFor(state, 0), memory);
-    expect(memory.rebelScore.get(3)).toBe(8);
+    const v1 = viewFor(state, 0);
+    updateMemory(v1, memory);
+    const p3 = beliefProbs(v1, v1.players[0]!, memory, v1.players[3]!);
+    expect(p3.rebel).toBeGreaterThan(0.8);
 
-    // 南蠻入侵只是掃到主公，證據力弱得多。
+    // 南蠻入侵只是掃到主公，證據力弱得多（但仍高於先驗）。
     state.publicEvents = [{ seq: 3, kind: 'use', source: 4, target: 1, cardName: 'barbarian' }];
     const groupMemory = createAiMemory();
-    updateMemory(viewFor(state, 0), groupMemory);
-    expect(groupMemory.rebelScore.get(4)).toBe(1);
+    const v2 = viewFor(state, 0);
+    updateMemory(v2, groupMemory);
+    const p4 = beliefProbs(v2, v2.players[0]!, groupMemory, v2.players[4]!);
+    expect(p4.rebel).toBeLessThan(p3.rebel);
+    expect(p4.rebel).toBeGreaterThan(0.3);
   });
 
   it('主公打誰不算證據（主公沒有其他人拿不到的資訊）', () => {
@@ -656,8 +661,8 @@ describe('技能與牌只對合理目標使用', () => {
     ];
     const memory = createAiMemory();
     updateMemory(viewFor(state, 0), memory);
-    expect(memory.rebelScore.get(2)).toBeUndefined();
-    expect(memory.rebelScore.get(3)).toBeUndefined();
+    expect(memory.belief.get(2)).toBeUndefined();
+    expect(memory.belief.get(3)).toBeUndefined();
   });
 
   it('死亡公開身份可反推兇手：殺忠臣提高嫌疑、殺反賊降低嫌疑', () => {
@@ -665,13 +670,19 @@ describe('技能與牌只對合理目標使用', () => {
 
     state.publicEvents = [{ seq: 1, kind: 'death', source: 2, target: 3, role: 'loyal' }];
     const loyalMemory = createAiMemory();
-    updateMemory(viewFor(state, 0), loyalMemory);
-    expect(loyalMemory.rebelScore.get(2)).toBe(5);
+    const v1 = viewFor(state, 1); // 主公視角
+    updateMemory(v1, loyalMemory);
+    // 擊殺忠臣 → 忠臣機率歸零、幾乎確定是敵人。
+    expect(beliefProbs(v1, v1.players[1]!, loyalMemory, v1.players[2]!).loyal).toBeLessThan(0.05);
 
     state.publicEvents = [{ seq: 2, kind: 'death', source: 4, target: 3, role: 'rebel' }];
     const rebelMemory = createAiMemory();
-    updateMemory(viewFor(state, 0), rebelMemory);
-    expect(rebelMemory.rebelScore.get(4)).toBe(-4);
+    const v2 = viewFor(state, 1);
+    updateMemory(v2, rebelMemory);
+    // 擊殺反賊只是弱證據（反賊、內奸都可能會做），仍略微降低反賊機率。
+    const p4 = beliefProbs(v2, v2.players[1]!, rebelMemory, v2.players[4]!);
+    expect(p4.rebel).toBeLessThan(0.33);
+    expect(p4.loyal).toBeLessThan(0.5);
   });
 
   it('反賊不會攻擊已明顯曝露的同夥，但仍會打沒有線索的目標', () => {
@@ -697,7 +708,7 @@ describe('技能與牌只對合理目標使用', () => {
     const pass: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
 
     const memory = createAiMemory();
-    memory.rebelScore.set(3, 8);
+    seedBeliefScore(memory, 3, 8);
 
     const onlySuspect = actionRequest(0, [atSuspect, pass]);
     state.pending = onlySuspect;
@@ -740,7 +751,7 @@ describe('技能與牌只對合理目標使用', () => {
     state.pending = request;
 
     const memory = createAiMemory();
-    memory.rebelScore.set(2, -8);
+    seedBeliefScore(memory, 2, -8);
     // 主公還有一個忠臣名額，行為上救過主公的人可被視為隊友。
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
       type: 'option',
@@ -754,7 +765,7 @@ describe('技能與牌只對合理目標使用', () => {
     const loyalRequest = actionRequest(0, [helper, pass]);
     loyalState.pending = loyalRequest;
     const loyalMemory = createAiMemory();
-    loyalMemory.rebelScore.set(2, -8);
+    seedBeliefScore(loyalMemory, 2, -8);
     expect(decide(viewFor(loyalState, 0), loyalRequest, { rngState: 1 }, loyalMemory, 'normal')).toEqual({
       type: 'option',
       optionId: 'slash:helper',
@@ -942,7 +953,7 @@ describe('技能與牌只對合理目標使用', () => {
     ]);
     enemyState.pending = enemyRequest;
     const enemyMemory = createAiMemory();
-    enemyMemory.rebelScore.set(2, 8);
+    seedBeliefScore(enemyMemory, 2, 8);
     for (let rngState = 1; rngState <= 20; rngState += 1) {
       expect(
         decide(viewFor(enemyState, 0), enemyRequest, { rngState }, enemyMemory),
@@ -1654,7 +1665,7 @@ describe('致命閘與高成本閘（各身份）', () => {
 
     // 玩家 2 行為上像另一名反賊（分數 8），佔住反賊名額 → 玩家 3 不再可能是反賊。
     const memory = createAiMemory();
-    memory.rebelScore.set(2, 8);
+    seedBeliefScore(memory, 2, 8);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
       type: 'option',
       optionId: 'slash:3',
@@ -1669,7 +1680,7 @@ describe('致命閘與高成本閘（各身份）', () => {
     state.pending = request;
 
     const memory = createAiMemory();
-    memory.rebelScore.set(2, 8);
+    seedBeliefScore(memory, 2, 8);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
       type: 'option',
       optionId: 'pass',
@@ -1721,7 +1732,7 @@ describe('致命閘與高成本閘（各身份）', () => {
     state.pending = request;
 
     const memory = createAiMemory();
-    memory.rebelScore.set(3, 8); // 玩家 3 是已確認敵人，但玩家 2 未知且會被連環帶走。
+    seedBeliefScore(memory, 3, 8); // 玩家 3 是已確認敵人，但玩家 2 未知且會被連環帶走。
 
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
       type: 'option',
@@ -1731,7 +1742,7 @@ describe('致命閘與高成本閘（各身份）', () => {
     // 解除玩家的連環狀態後，不再有非敵人會被傳導傷害帶走。
     state.players[2]!.chained = false;
     const safeMemory = createAiMemory();
-    safeMemory.rebelScore.set(3, 8);
+    seedBeliefScore(safeMemory, 3, 8);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, safeMemory, 'normal')).toEqual({
       type: 'option',
       optionId: 'fire:3',
@@ -1797,7 +1808,7 @@ describe('致命閘與高成本閘（各身份）', () => {
     });
 
     const memory = createAiMemory();
-    memory.rebelScore.set(3, 8); // 已確認敵人時才可用酒殺。
+    seedBeliefScore(memory, 3, 8); // 已確認敵人時才可用酒殺。
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
       type: 'option',
       optionId: 'slash:3',
@@ -1822,7 +1833,7 @@ describe('致命閘與高成本閘（各身份）', () => {
     state.pending = request;
 
     const memory = createAiMemory();
-    memory.rebelScore.set(3, 8);
+    seedBeliefScore(memory, 3, 8);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
       type: 'option',
       optionId: 'pass',
@@ -1830,7 +1841,7 @@ describe('致命閘與高成本閘（各身份）', () => {
 
     state.players[2]!.hp = 4;
     const safeMemory = createAiMemory();
-    safeMemory.rebelScore.set(3, 8);
+    seedBeliefScore(safeMemory, 3, 8);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, safeMemory, 'normal')).toEqual({
       type: 'option',
       optionId: 'slash:2+3',
@@ -1850,9 +1861,9 @@ describe('致命閘與高成本閘（各身份）', () => {
     const request = actionRequest(0, [option, passOption]);
     state.pending = request;
 
-    // 分數 −2：不像反賊（敵意略高），但未達已確認門檻（≤−6），高成本【火攻】被擋。
+    // 分數 −1：稍微不像反賊，但反賊機率仍高於已確認門檻，高成本【火攻】被擋。
     const memory = createAiMemory();
-    memory.rebelScore.set(3, -2);
+    seedBeliefScore(memory, 3, -1);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
       type: 'option',
       optionId: 'pass',
@@ -1860,7 +1871,7 @@ describe('致命閘與高成本閘（各身份）', () => {
 
     // 分數 −8：公開行為足以斷定不是反賊 → 已確認敵人，可用高成本牌。
     const confirmed = createAiMemory();
-    confirmed.rebelScore.set(3, -8);
+    seedBeliefScore(confirmed, 3, -8);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, confirmed, 'normal')).toEqual({
       type: 'option',
       optionId: 'fire_attack:3',
@@ -1882,7 +1893,7 @@ describe('致命閘與高成本閘（各身份）', () => {
 
     // 只有玩家 2 是已確認敵人時不使用。
     const half = createAiMemory();
-    half.rebelScore.set(2, 8);
+    seedBeliefScore(half, 2, 8);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, half, 'normal')).toEqual({
       type: 'option',
       optionId: 'pass',
@@ -1890,8 +1901,8 @@ describe('致命閘與高成本閘（各身份）', () => {
 
     // 兩名都是已確認敵人時可用。
     const both = createAiMemory();
-    both.rebelScore.set(2, 8);
-    both.rebelScore.set(3, 8);
+    seedBeliefScore(both, 2, 8);
+    seedBeliefScore(both, 3, 8);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, both, 'normal')).toEqual({
       type: 'option',
       optionId: 'lijian:2:3',

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createGame, viewFor } from '../engine/state';
 import { runGame } from '../engine/engine';
 import type { GameView, PlayOption, PlayerId, PlayerView, Request } from '../engine/types';
-import { beliefsFor, createAiMemory, decide, updateMemory, type AiMemory } from '../ai/policy';
+import { beliefProbs, beliefsFor, createAiMemory, decide, seedBeliefScore, updateMemory, type AiMemory } from '../ai/policy';
 import { autoPlayGame } from '../game/autoplay';
 import { GameController } from '../game/controller';
 
@@ -47,7 +47,7 @@ describe('M4 公開事件與身份信念', () => {
     }
   });
 
-  it('updateMemory 依公開事件更新疑似反賊分數', () => {
+  it('updateMemory 依公開事件更新身份信念', () => {
     const memory = createAiMemory();
     const view = {
       players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null)],
@@ -59,11 +59,15 @@ describe('M4 公開事件與身份信念', () => {
     } as unknown as GameView;
 
     updateMemory(view, memory);
-    expect(memory.rebelScore.get(2) ?? 0).toBeGreaterThanOrEqual(8);
-    expect(memory.rebelScore.get(3) ?? 0).toBeLessThan(0);
+    const self = view.players[0]!;
+    // 連兩次對主公出【殺】→ 幾乎確定像反賊。
+    expect(beliefProbs(view, self, memory, view.players[2]!).rebel).toBeGreaterThan(0.8);
+    // 瀕死救主公 → 更像忠臣／內奸（此視角為忠臣，故落在內奸）。
+    const p3 = beliefProbs(view, self, memory, view.players[3]!);
+    expect(p3.spy + p3.loyal).toBeGreaterThan(p3.rebel);
   });
 
-  it('仁德公開事件以弱證據更新隊友判斷，破空城則反向計分', () => {
+  it('仁德公開事件：給主公偏忠臣、給可疑反賊偏反賊、破空城反向', () => {
     const memory = createAiMemory();
     const view = {
       turnCount: 1,
@@ -74,30 +78,26 @@ describe('M4 公開事件與身份信念', () => {
         { seq: 2, kind: 'give', source: 3, target: 4, amount: 1 },
       ],
     } as unknown as GameView;
-    memory.rebelScore.set(4, 8);
+    seedBeliefScore(memory, 4, 8); // 玩家 4 行為上像反賊
 
     updateMemory(view, memory);
-    expect(memory.rebelScore.get(2)).toBe(-2);
-    expect(memory.rebelScore.get(3)).toBe(2);
+    expect(memory.belief.get(2)!.loyal).toBeGreaterThan(0);
+    expect(memory.belief.get(2)!.rebel).toBeLessThan(0);
+    expect(memory.belief.get(3)!.rebel).toBeGreaterThan(0);
 
     const brokeMemory = createAiMemory();
     const brokeView = {
       turnCount: 2,
       pending: null,
       players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null), player(4, null)],
-      events: [
-        { seq: 1, kind: 'give', source: 2, target: 1, amount: 1, brokeKongcheng: true },
-        { seq: 2, kind: 'give', source: 3, target: 4, amount: 1, brokeKongcheng: true },
-      ],
+      events: [{ seq: 1, kind: 'give', source: 2, target: 1, amount: 1, brokeKongcheng: true }],
     } as unknown as GameView;
-    brokeMemory.rebelScore.set(4, 8);
-
     updateMemory(brokeView, brokeMemory);
-    expect(brokeMemory.rebelScore.get(2)).toBe(2);
-    expect(brokeMemory.rebelScore.get(3)).toBe(-1);
+    // 破壞主公空城是敵意，不該被當成給主公的信任證據。
+    expect(brokeMemory.belief.get(2)!.loyal).toBeLessThan(0);
   });
 
-  it('仁德事件不因自己的給牌自我強化，且同回合有上限', () => {
+  it('仁德事件不因自己的給牌自我強化，且同類證據有計次上限', () => {
     const memory = createAiMemory();
     const selfRequest: Request = {
       id: 1,
@@ -114,23 +114,28 @@ describe('M4 公開事件與身份信念', () => {
       events: [{ seq: 1, kind: 'give', source: 2, target: 1, amount: 2 }],
     } as unknown as GameView;
     updateMemory(view, memory);
-    expect(memory.rebelScore.get(2)).toBeUndefined();
+    expect(memory.belief.get(2)).toBeUndefined();
 
-    const capMemory = createAiMemory();
-    const capView = {
-      turnCount: 4,
-      pending: null,
-      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null)],
-      events: Array.from({ length: 5 }, (_, index) => ({
-        seq: index + 1,
-        kind: 'give' as const,
-        source: 2,
-        target: 1,
-        amount: 2,
-      })),
-    } as unknown as GameView;
-    updateMemory(capView, capMemory);
-    expect(capMemory.rebelScore.get(2)).toBe(-4);
+    const build = (count: number): AiMemory => {
+      const m = createAiMemory();
+      const capView = {
+        turnCount: 4,
+        pending: null,
+        players: [player(0, 'loyal'), player(1, 'lord'), player(2, null)],
+        events: Array.from({ length: count }, (_, index) => ({
+          seq: index + 1,
+          kind: 'give' as const,
+          source: 2,
+          target: 1,
+          amount: 2,
+        })),
+      } as unknown as GameView;
+      updateMemory(capView, m);
+      return m;
+    };
+    // 給主公牌累積成忠臣證據，但同類事件只計上限次數，之後不再增加。
+    expect(build(3).belief.get(2)!.loyal).toBeGreaterThan(0);
+    expect(build(12).belief.get(2)!.loyal).toBe(build(5).belief.get(2)!.loyal);
   });
 
   it('高手難度會用信念選擇高嫌疑目標，新手忽略信念', () => {
@@ -160,7 +165,7 @@ describe('M4 公開事件與身份信念', () => {
     const view = viewFor(state, 0);
 
     const memory = createAiMemory();
-    memory.rebelScore.set(3, 20);
+    seedBeliefScore(memory, 3, 20);
 
     let hardPicksSuspicious = 0;
     let easyPicksSuspicious = 0;
@@ -253,7 +258,7 @@ describe('M4 公開事件與身份信念', () => {
     }
   });
 
-  it('公開事件：治療主公與擊殺內奸都會影響信念，但治療有軟性上限', () => {
+  it('公開事件：群體錦囊與治療主公都會影響信念，且同類證據有計次上限', () => {
     const memory = createAiMemory();
     const view = {
       turnCount: 1,
@@ -270,8 +275,10 @@ describe('M4 公開事件與身份信念', () => {
     } as unknown as GameView;
     updateMemory(view, memory);
 
-    // +1 使用、+2 群體傷害、−4 擊殺內奸，三次結姻治療主公最多只能降到 −5。
-    expect(memory.rebelScore.get(2)).toBe(-5);
+    // 各類事件各自累積：治療主公偏忠臣、群體錦囊掃到主公偏反賊。
+    const acc = memory.beliefAcc.get(2)!;
+    expect(acc.get('healLord')!.loyal).toBeGreaterThan(0);
+    expect(acc.get('hostileGroupLord')!.rebel).toBeGreaterThan(0);
   });
 
   it('上帝視角 beliefsFor 提供每人判斷與最近原因', () => {
@@ -292,7 +299,8 @@ describe('M4 公開事件與身份信念', () => {
         { seq: 3, kind: 'heal', source: 3, target: 0, skill: 'jieyin', amount: 1 },
         { seq: 4, kind: 'heal', source: 3, target: 0, skill: 'jieyin', amount: 1 },
         { seq: 5, kind: 'heal', source: 4, target: 0, skill: 'jieyin', amount: 1 },
-        { seq: 6, kind: 'save', source: 4, target: 0, cardName: 'peach' },
+        { seq: 6, kind: 'heal', source: 4, target: 0, skill: 'jieyin', amount: 1 },
+        { seq: 7, kind: 'save', source: 4, target: 0, cardName: 'peach' },
       ],
     } as unknown as GameView;
     updateMemory(view, memory, 0);
@@ -302,9 +310,9 @@ describe('M4 公開事件與身份信念', () => {
     expect(belief.cells).toHaveLength(5);
     expect(belief.cells.find((cell) => cell.target === 0)!.relation).toBe('ally');
     expect(belief.cells.find((cell) => cell.target === 2)!.relation).toBe('enemy');
-    // 只靠治療最多降到 −5，仍未達隊友門檻。
+    // 兩次治療還不足以成為隊友。
     expect(belief.cells.find((cell) => cell.target === 3)!.relation).toBe('unknown');
-    // 治療加上瀕死救援是硬性證據，可成為隊友。
+    // 治療加上瀕死救援累積足夠，可成為隊友。
     const healer = belief.cells.find((cell) => cell.target === 4)!;
     expect(healer.relation).toBe('ally');
     expect(healer.notes.some((note) => note.text.includes('救助主公'))).toBe(true);
