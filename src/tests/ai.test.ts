@@ -11,6 +11,7 @@ import type {
   Request,
   Response,
   ResponseOption,
+  Role,
 } from '../engine/types';
 
 function card(
@@ -1894,6 +1895,101 @@ describe('致命閘與高成本閘（各身份）', () => {
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, both, 'normal')).toEqual({
       type: 'option',
       optionId: 'lijian:2:3',
+    });
+  });
+});
+
+describe('AI 寒冰劍判斷', () => {
+  const pass: ResponseOption = { id: 'pass', label: '不出', kind: 'pass', cards: [] };
+
+  function choiceRequest(player: number, target: number, damage: number): Request {
+    const ice: ResponseOption = {
+      id: 'ice_sword',
+      label: '寒冰劍：防止此傷害，改為棄置目標兩張牌',
+      kind: 'skill',
+      cards: [],
+      skill: 'ice_sword',
+      targets: [target],
+    };
+    return {
+      id: 901,
+      player,
+      prompt: '是否發動【寒冰劍】？',
+      kind: 'response',
+      need: 'choice',
+      options: [ice, pass],
+      context: '寒冰劍',
+      targets: [target],
+      damage,
+    };
+  }
+
+  function stateWith(roles: Role[]): GameState {
+    const state = fresh();
+    state.turnCount = 2;
+    state.publicEvents = [];
+    state.players.forEach((player, index) => {
+      player.role = roles[index]!;
+      player.hp = 4;
+      player.maxHp = 4;
+      player.alive = true;
+      player.hand = [];
+      player.judgeZone = [];
+      player.equips = { weapon: null, armor: null, horsePlus: null, horseMinus: null };
+    });
+    return state;
+  }
+
+  it('足以致命時不發動，直接造成傷害收頭', () => {
+    const state = stateWith(['rebel', 'lord', 'loyal', 'rebel', 'spy']);
+    state.players[1]!.hp = 1;
+    state.players[1]!.hand = [card(9101, 'peach'), card(9102, 'dodge')];
+    const request = choiceRequest(0, 1, 1);
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('敵人尚不致命且有多張牌時會發動拆牌', () => {
+    const state = stateWith(['rebel', 'lord', 'loyal', 'rebel', 'spy']);
+    state.players[1]!.hp = 4;
+    state.players[1]!.hand = [card(9103, 'peach'), card(9104, 'dodge')];
+    const request = choiceRequest(0, 1, 1);
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'ice_sword',
+    });
+  });
+
+  it('敵人只剩一張未知手牌時不發動，保留傷害', () => {
+    const state = stateWith(['rebel', 'lord', 'loyal', 'rebel', 'spy']);
+    state.players[1]!.hp = 3;
+    state.players[1]!.hand = [card(9105, 'peach')];
+    const request = choiceRequest(0, 1, 1);
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('目標不是已確認敵人時不發動，避免拆到可能的隊友', () => {
+    // 主公對未知非主公：忠臣仍在，未知不當敵人。
+    const state = stateWith(['lord', 'loyal', 'rebel', 'rebel', 'spy']);
+    state.players[1]!.hp = 4;
+    state.players[1]!.hand = [card(9106, 'peach'), card(9107, 'dodge')];
+    const request = choiceRequest(0, 1, 1);
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
     });
   });
 });

@@ -1917,6 +1917,29 @@ function chooseResponse(
     const skill = skills[0];
     if (skill) {
       const id = skill.skill;
+      if (id === 'ice_sword') {
+        const targetId = skill.targets?.[0] ?? request.targets?.[0];
+        const target = targetId === undefined ? null : view.players[targetId] ?? null;
+        // 只對已確認敵人動用；對未知或可能的隊友，拆牌不如保留傷害。
+        if (!target || !target.alive || !isConfirmedEnemy(view, self, target)) {
+          return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+        }
+        // 這刀足以致命：直接造成傷害收頭，不為了棄牌而防止傷害。
+        if (target.hp <= (request.damage ?? 1)) {
+          return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+        }
+        // 目標只剩一張未知手牌時，棄 1 張不如造成傷害；公開裝備仍值得拆。
+        const equipCount = [
+          target.equips.weapon,
+          target.equips.armor,
+          target.equips.horsePlus,
+          target.equips.horseMinus,
+        ].filter(Boolean).length;
+        if (target.handCount + equipCount <= 1 && equipCount === 0) {
+          return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+        }
+        return { type: 'option', optionId: skill.id };
+      }
       // 鬼才、流離預設不發動；裸衣沒有【殺】時也不發動。
       if (id === 'guicai' || id === 'liuli') {
         return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };

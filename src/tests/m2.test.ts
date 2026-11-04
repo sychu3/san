@@ -713,6 +713,33 @@ describe('八把武器', () => {
     expect(handOf(state, 1)).toHaveLength(0);
   });
 
+  it('寒冰劍請求會帶入預期傷害（含藤甲火焰加成）', () => {
+    const state = fresh();
+    state.players[0]!.equips.weapon = card(230, 'ice_sword', 'spade', 2);
+    state.players[0]!.hand = [card(231, 'fire_slash', 'heart', 4)];
+    state.players[1]!.equips.armor = card(232, 'vine_armor', 'club', 2);
+    state.players[1]!.hand = [card(233, 'peach', 'heart', 5), card(234, 'wine', 'spade', 9)];
+
+    let observed: number | undefined;
+    playAction(
+      state,
+      0,
+      (option) => option.asCard === 'fire_slash' && option.targets[0] === 1,
+      (request) => {
+        if (request.kind === 'response' && request.need === 'choice' && request.player === 0) {
+          const skill = request.options.find((option) => option.skill === 'ice_sword');
+          if (skill) {
+            observed = request.damage;
+            return { type: 'option', optionId: skill.id };
+          }
+        }
+        return baseline(request);
+      },
+    );
+    // 火焰【殺】對藤甲為 1 + 1，AI 才能知道這刀是否足以致命。
+    expect(observed).toBe(2);
+  });
+
   it('寒冰劍：目標只有手牌時，棄牌觸發連營後仍要棄第二張', () => {
     const state = fresh();
     state.players[1]!.generalId = 'lu_xun';

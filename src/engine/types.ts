@@ -254,6 +254,11 @@ export type Request =
       targets?: PlayerId[];
       /** 目前已打出的【無懈可擊】張數；奇數代表原錦囊目前被抵消。 */
       nullificationCount?: number;
+      /**
+       * 寒冰劍等「防止傷害」的技能需要知道這張傷害牌最終會造成多少傷害，
+       * 才能判斷是否足以致命（足以致命時應直接收頭，不防止傷害）。
+       */
+      damage?: number;
     })
   | (RequestBase & {
       kind: 'chooseCards';

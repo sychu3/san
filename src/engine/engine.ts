@@ -129,6 +129,8 @@ interface ResponseExtra {
   source?: PlayerId;
   targets?: PlayerId[];
   nullificationCount?: number;
+  /** 防止傷害類技能（如寒冰劍）所需的預期傷害值。 */
+  damage?: number;
 }
 
 function* askResponse(
@@ -2506,6 +2508,16 @@ function* resolveSlashTarget(
   // 必須棄 2 張，只有 1 張時可發動並棄 1 張，沒有牌時不能發動。
   // 棄牌後若因【連營】、【梟姬】等獲得新牌，仍可繼續棄到第 2 張。
   if (!extra.fromWeapon && weapon === 'ice_sword' && handAndEquips(target).length > 0) {
+    const preview = previewDamageAmount(
+      state,
+      source,
+      target,
+      1 + bonus,
+      use.name,
+      use.nature,
+      ignoreArmor,
+      false,
+    );
     const chosen = yield* askResponse(
       state,
       source,
@@ -2520,6 +2532,7 @@ function* resolveSlashTarget(
       }],
       '是否發動【寒冰劍】？',
       '寒冰劍',
+      { targets: [target.id], damage: preview.amount },
     );
     if (chosen) {
       const discarded: Card[] = [];
@@ -2850,6 +2863,56 @@ interface DamageOptions {
   chainSet?: Set<PlayerId>;
 }
 
+/**
+ * 一張傷害牌在計入古錠刀、裸衣、藤甲與白銀獅子後的最終傷害值。
+ * 寒冰劍要先知道「這刀是否足以致命」才能決定要不要防止傷害，因此與
+ * `dealDamage` 共用同一套計算與日誌，避免 AI 為了棄牌而放過收頭。
+ */
+function previewDamageAmount(
+  state: GameState,
+  source: PlayerState | null,
+  target: PlayerState,
+  base: number,
+  cardName: CardName | undefined,
+  nature: Nature,
+  ignoreArmor: boolean,
+  fromChain: boolean,
+): { amount: number; notes: string[] } {
+  let amount = base;
+  const notes: string[] = [];
+  if (
+    source &&
+    cardName &&
+    isSlashCard(cardName) &&
+    source.equips.weapon?.name === 'ancient_scimitar' &&
+    target.hand.length === 0 &&
+    !fromChain
+  ) {
+    amount += 1;
+    notes.push(`${nameOf(state, source.id)} 的【古錠刀】令傷害 +1。`);
+  }
+  // 裸衣：本回合【殺】與【決鬥】傷害 +1。
+  if (
+    source &&
+    source.marks.luoyi &&
+    cardName &&
+    (isSlashCard(cardName) || cardName === 'duel') &&
+    !fromChain
+  ) {
+    amount += 1;
+    notes.push(`${nameOf(state, source.id)} 的【裸衣】令傷害 +1。`);
+  }
+  if (!ignoreArmor && target.equips.armor?.name === 'vine_armor' && nature === 'fire') {
+    amount += 1;
+    notes.push(`${nameOf(state, target.id)} 的【藤甲】令火焰傷害 +1。`);
+  }
+  if (!ignoreArmor && target.equips.armor?.name === 'silver_lion' && amount > 1) {
+    amount = 1;
+    notes.push(`${nameOf(state, target.id)} 的【白銀獅子】將傷害限制為 1。`);
+  }
+  return { amount, notes };
+}
+
 function* dealDamage(
   state: GameState,
   options: DamageOptions,
@@ -2867,42 +2930,19 @@ function* dealDamage(
     amount: options.amount,
   });
 
-  let amount = options.amount;
   const damageCardName = options.cardName ?? card?.name;
-
-  if (
-    source &&
-    damageCardName &&
-    isSlashCard(damageCardName) &&
-    source.equips.weapon?.name === 'ancient_scimitar' &&
-    target.hand.length === 0 &&
-    !options.fromChain
-  ) {
-    amount += 1;
-    log(state, 'damage', `${nameOf(state, source.id)} 的【古錠刀】令傷害 +1。`);
-  }
-
-  // 裸衣：本回合【殺】與【決鬥】傷害 +1。
-  if (
-    source &&
-    source.marks.luoyi &&
-    damageCardName &&
-    (isSlashCard(damageCardName) || damageCardName === 'duel') &&
-    !options.fromChain
-  ) {
-    amount += 1;
-    log(state, 'damage', `${nameOf(state, source.id)} 的【裸衣】令傷害 +1。`);
-  }
-
-  if (!options.ignoreArmor && target.equips.armor?.name === 'vine_armor' && nature === 'fire') {
-    amount += 1;
-    log(state, 'damage', `${nameOf(state, target.id)} 的【藤甲】令火焰傷害 +1。`);
-  }
-
-  if (!options.ignoreArmor && target.equips.armor?.name === 'silver_lion' && amount > 1) {
-    amount = 1;
-    log(state, 'damage', `${nameOf(state, target.id)} 的【白銀獅子】將傷害限制為 1。`);
-  }
+  const preview = previewDamageAmount(
+    state,
+    source,
+    target,
+    options.amount,
+    damageCardName,
+    nature,
+    options.ignoreArmor ?? false,
+    options.fromChain ?? false,
+  );
+  const amount = preview.amount;
+  for (const note of preview.notes) log(state, 'damage', note);
 
   if (amount <= 0) {
     emitTiming('afterDamage', { state, source: sourceId, target: targetId, card, amount: 0 });
