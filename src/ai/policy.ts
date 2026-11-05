@@ -92,6 +92,12 @@ export interface AiMemory {
   probeUsed: boolean;
   /** 本回合是否發動過【裸衣】（自己決定，之後用來估算傷害）。 */
   luoyiTurn: number;
+  /** 證據版本號；每次新增／設定證據時遞增，供聯合後驗快取失效。 */
+  beliefVersion: number;
+  /** 聯合身份後驗的快取（依視圖與證據版本失效）。 */
+  beliefCache: { key: string; probs: Map<PlayerId, RoleBelief> } | null;
+  /** 主公死亡的公開事件序號；用於回溯「事件發生時主公是否仍存活」。 */
+  lordDeathSeq: number;
 }
 
 export function createAiMemory(): AiMemory {
@@ -113,6 +119,9 @@ export function createAiMemory(): AiMemory {
     probeTurn: -1,
     probeUsed: false,
     luoyiTurn: -1,
+    beliefVersion: 0,
+    beliefCache: null,
+    lordDeathSeq: Number.POSITIVE_INFINITY,
   };
 }
 
@@ -151,6 +160,7 @@ const P_NO_ALLY = 0.1; // 反賊：低於此視為非隊友（敵人）
 const P_ENEMY_REL = 0.85; // 主公／忠臣：關係視為敵人的敵意機率門檻
 const P_CONFIRM_LOYAL = 0.01; // 主公：P(忠) 低於此＝已確認敵人（致命／高成本閘用）
 const BELIEF_K = 80; // 機率偏離先驗時對目標分的影響係數
+const JOINT_BLEND = 0.5; // 聯合後驗與逐人獨立近似的幾何混合比例；避免弱證據過度重排名額
 
 function rb(rebel: number, loyal: number, spy: number): RoleBelief {
   return { rebel, loyal, spy };
@@ -174,6 +184,9 @@ const EV = {
   killSpy: rb(Math.log(0.9), Math.log(1.05), Math.log(1.05)),
   killLoyal: rb(Math.log(1.1), Math.log(0.02), Math.log(1.4)),
   helpRebel: rb(Math.log(1.6), Math.log(0.4), Math.log(0.4)),
+  // 顯示性偏好：主公是合法目標卻選擇其他目標（機會經嚴格條件過濾）。
+  // 500 局實測率約 反 6.5%／忠 100%／奸 77%，這裡保守取比值約 2.3～3 倍。
+  spareLord: rb(Math.log(0.3), Math.log(0.9), Math.log(0.72)),
 };
 /** 同類型事件最多計入幾次，避免刷同一種行為（取代舊的軟性地板）。 */
 const EVIDENCE_COUNT: Record<string, number> = {
@@ -189,6 +202,7 @@ const EVIDENCE_COUNT: Record<string, number> = {
   killSpy: 2,
   killLoyal: 2,
   helpRebel: 3,
+  spareLord: 3,
 };
 
 /** 累積一筆對數證據；同類型最多計 N 次（遞減報酬）。 */
@@ -214,6 +228,7 @@ function addEvidence(
   const n = cnts.get(type) ?? 0;
   if (n >= cap) return; // 已達同類型上限，之後不再更新
   cnts.set(type, n + 1);
+  memory.beliefVersion += 1;
   const cur = byType.get(type) ?? rb(0, 0, 0);
   cur.rebel += table.rebel;
   cur.loyal += table.loyal;
@@ -234,28 +249,178 @@ function addEvidence(
   }
 }
 
-/** 先驗 × 公開證據 → 三身份機率（剩餘人數為硬約束）。 */
+/** 這名玩家的公開／已知身份；自己、主公與已公開死者都算已知。 */
+function knownRoleOf(self: PlayerView, memory: AiMemory, player: PlayerView): Role | null {
+  if (player.id === self.id) return self.role;
+  return player.role ?? memory.knownRole.get(player.id) ?? null;
+}
+
+/** 已知身份轉成三假設的一點分佈；主公不屬三假設，歸為非敵方（忠）。 */
+function oneHot(role: Role): RoleBelief {
+  return rb(role === 'rebel' ? 1 : 0, role === 'loyal' || role === 'lord' ? 1 : 0, role === 'spy' ? 1 : 0);
+}
+
+/**
+ * 舊的逐人獨立近似；作為聯合後驗的混合基準。
+ * 單獨使用時對弱證據較保守，但無法傳遞「忠臣名額被佔」的推論。
+ */
+function independentBeliefs(view: GameView, self: PlayerView, memory: AiMemory): Map<PlayerId, RoleBelief> {
+  const result = new Map<PlayerId, RoleBelief>();
+  const counts = remainingRoleCounts(view, self, memory);
+  const total = counts.rebel + counts.loyal + counts.spy;
+  for (const player of view.players) {
+    const known = knownRoleOf(self, memory, player);
+    if (known !== null) {
+      result.set(player.id, oneHot(known));
+      continue;
+    }
+    if (total <= 0) {
+      result.set(player.id, rb(0, 0, 0));
+      continue;
+    }
+    const ev = memory.belief.get(player.id) ?? rb(0, 0, 0);
+    const w = rb(0, 0, 0);
+    let sum = 0;
+    for (const r of ROLE3) {
+      if (counts[r] <= 0) continue;
+      const value = Math.exp(Math.log(counts[r] / total) + clampNum(ev[r], -12, 12));
+      w[r] = value;
+      sum += value;
+    }
+    result.set(player.id, sum > 0 ? rb(w.rebel / sum, w.loyal / sum, w.spy / sum) : rb(0, 0, 0));
+  }
+  return result;
+}
+
+/**
+ * 聯合身份後驗：對所有未知存活者枚舉剩餘身份的合法組合，
+ * 以公開證據的乘積加權，回傳每人三身份邊際機率。
+ * 這讓「張遼很可能忠臣」自然推得「孫尚香很可能是另一名反賊」，
+ * 補足逐人獨立近似無法傳遞的角色名額約束。
+ * 未知者最多 3 人，合法組合最多 6 種，成本極低。
+ */
+function jointBeliefs(view: GameView, self: PlayerView, memory: AiMemory): Map<PlayerId, RoleBelief> {
+  const result = new Map<PlayerId, RoleBelief>();
+
+  for (const player of view.players) {
+    const known = knownRoleOf(self, memory, player);
+    if (known !== null) result.set(player.id, oneHot(known));
+  }
+
+  const unknown = view.players.filter(
+    (player) => player.alive && player.id !== self.id && knownRoleOf(self, memory, player) === null,
+  );
+  if (unknown.length === 0) return result;
+
+  const counts = remainingRoleCounts(view, self, memory);
+  const slots = counts.rebel + counts.loyal + counts.spy;
+  if (slots !== unknown.length) {
+    // 人數不一致（例如測試用的簡化視圖）：退回逐人獨立近似，避免整組歸零。
+    const fallback = independentBeliefs(view, self, memory);
+    for (const player of unknown) result.set(player.id, fallback.get(player.id) ?? rb(0, 0, 0));
+    return result;
+  }
+
+  const remaining: Record<Role3, number> = { ...counts };
+  const marginals = new Map<PlayerId, RoleBelief>();
+  for (const player of unknown) marginals.set(player.id, rb(0, 0, 0));
+  const chosen: Role3[] = [];
+  let totalWeight = 0;
+
+  const walk = (index: number, weight: number): void => {
+    if (index === unknown.length) {
+      totalWeight += weight;
+      for (let i = 0; i < unknown.length; i += 1) {
+        const id = unknown[i]!.id;
+        const role = chosen[i]!;
+        const marginal = marginals.get(id);
+        if (marginal) marginal[role] += weight;
+      }
+      return;
+    }
+    const player = unknown[index]!;
+    const ev = memory.belief.get(player.id) ?? rb(0, 0, 0);
+    for (const role of ROLE3) {
+      if (remaining[role] <= 0) continue;
+      remaining[role] -= 1;
+      chosen.push(role);
+      walk(index + 1, weight * Math.exp(clampNum(ev[role], -12, 12)));
+      chosen.pop();
+      remaining[role] += 1;
+    }
+  };
+  walk(0, 1);
+
+  // 與逐人獨立近似幾何混合：聯合後驗負責傳遞角色名額，獨立近似負責壓抑
+  // 弱證據造成的過度重排（例如把安靜的反賊隊友擠成敵人）。
+  const independent = independentBeliefs(view, self, memory);
+  const blended = new Map<PlayerId, RoleBelief>();
+  for (const [id, marginal] of marginals) {
+    if (totalWeight <= 0) {
+      blended.set(id, rb(0, 0, 0));
+      continue;
+    }
+    const jointP = rb(marginal.rebel / totalWeight, marginal.loyal / totalWeight, marginal.spy / totalWeight);
+    const ind = independent.get(id) ?? rb(0, 0, 0);
+    const w = rb(0, 0, 0);
+    let sum = 0;
+    for (const r of ROLE3) {
+      const value =
+        Math.pow(Math.max(jointP[r], 1e-9), JOINT_BLEND) * Math.pow(Math.max(ind[r], 1e-9), 1 - JOINT_BLEND);
+      w[r] = value;
+      sum += value;
+    }
+    blended.set(id, sum > 0 ? rb(w.rebel / sum, w.loyal / sum, w.spy / sum) : rb(0, 0, 0));
+  }
+  // 混合會破壞「各角色期望人數＝剩餘名額」的守恆；用 IPF 校正回來，
+  // 否則 AoE 這類對機率線性的決策會高估敵人數、連帶打傷隊友。
+  alignRoleCounts(blended, counts);
+  for (const [id, probs] of blended) result.set(id, probs);
+  return result;
+}
+
+/** 反覆縮放，使未知者的角色機率總和對齊剩餘名額（逐人重新歸一）。 */
+function alignRoleCounts(probs: Map<PlayerId, RoleBelief>, counts: Record<Role3, number>): void {
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    for (const role of ROLE3) {
+      let sum = 0;
+      for (const value of probs.values()) sum += value[role];
+      const target = counts[role];
+      if (sum <= 1e-9) continue;
+      const scale = target / sum;
+      for (const value of probs.values()) value[role] *= scale;
+    }
+    for (const value of probs.values()) {
+      const sum = value.rebel + value.loyal + value.spy;
+      if (sum > 0) {
+        value.rebel /= sum;
+        value.loyal /= sum;
+        value.spy /= sum;
+      }
+    }
+  }
+}
+
+/** 先驗 × 公開證據 → 三身份機率（剩餘人數為硬約束，使用聯合後驗）。 */
 export function beliefProbs(
   view: GameView,
   self: PlayerView,
   memory: AiMemory,
   target: PlayerView,
 ): RoleBelief {
-  const counts = remainingRoleCounts(view, self, memory);
-  const total = counts.rebel + counts.loyal + counts.spy;
-  if (total <= 0) return rb(0, 0, 0);
-  const ev = memory.belief.get(target.id) ?? rb(0, 0, 0);
-  const w = rb(0, 0, 0);
-  let sum = 0;
-  for (const r of ROLE3) {
-    const c = counts[r];
-    if (c <= 0) continue;
-    const v = Math.exp(Math.log(c / total) + clampNum(ev[r], -12, 12));
-    w[r] = v;
-    sum += v;
+  const key = [
+    self.id,
+    self.role,
+    memory.lastEventSeq,
+    memory.beliefVersion,
+    view.players
+      .map((player) => `${player.id}${player.alive ? 'a' : 'd'}${knownRoleOf(self, memory, player) ?? '?'}`)
+      .join(','),
+  ].join('|');
+  if (memory.beliefCache?.key !== key) {
+    memory.beliefCache = { key, probs: jointBeliefs(view, self, memory) };
   }
-  if (sum <= 0) return rb(0, 0, 0);
-  return rb(w.rebel / sum, w.loyal / sum, w.spy / sum);
+  return memory.beliefCache.probs.get(target.id) ?? rb(0, 0, 0);
 }
 
 /** 這名未知者是否「行為上像反賊」（供援助可疑反賊的證據判斷；不需觀察者）。 */
@@ -275,6 +440,82 @@ export function seedBeliefScore(memory: AiMemory, id: PlayerId, score: number): 
   const ev = rb(v, -v, -v);
   memory.belief.set(id, ev);
   memory.beliefAcc.set(id, new Map([['seed', ev]]));
+  memory.beliefVersion += 1;
+}
+
+/** 顯示性偏好：只有這些「無距離或條件單純」的直接敵意錦囊會產生 spareLord 證據。 */
+const SPARE_LORD_CARDS = new Set<CardName>([
+  'dismantle',
+  'snatch',
+  'duel',
+  'fire_attack',
+  'indulgence',
+  'supply_shortage',
+]);
+
+/** 目標是否還有任何公開可見的牌（手牌、裝備、判定區）。 */
+function hasAnyPublicCard(player: PlayerView): boolean {
+  return (
+    player.handCount > 0 ||
+    player.equips.weapon !== null ||
+    player.equips.armor !== null ||
+    player.equips.horsePlus !== null ||
+    player.equips.horseMinus !== null ||
+    player.judgeZone.length > 0
+  );
+}
+
+/**
+ * 「有機會攻擊主公卻選擇其他目標」的機會判定（顯示性偏好）。
+ * 只使用公開資訊並刻意保守：來源 1 血（自保）、目標是公開忠臣、
+ * 主公空城／謙遜等情況都不算機會。
+ */
+function spareLordOpportunity(
+  view: GameView,
+  memory: AiMemory,
+  selfId: PlayerId | null,
+  event: PublicEvent,
+  lordId: PlayerId,
+): boolean {
+  if (event.cardName === undefined || !SPARE_LORD_CARDS.has(event.cardName)) return false;
+  const lord = view.players.find((player) => player.id === lordId);
+  const source = event.source === null ? null : view.players.find((player) => player.id === event.source);
+  if (!lord || !source || !source.alive) return false;
+  // 事件發生時主公必須還活著；若現在已死，以死亡序號回溯。
+  if (!lord.alive && event.seq >= memory.lordDeathSeq) return false;
+  // 1 血角色有充分的自保理由，不打主公不構成忠誠證據。
+  if (source.hp <= 1) return false;
+  // 打公開忠臣不是「放過主公」的忠誠訊號。
+  const target = event.target === null ? null : view.players.find((player) => player.id === event.target);
+  if (target) {
+    const self = selfId === null ? null : view.players.find((player) => player.id === selfId) ?? null;
+    const targetRole = target.role ?? memory.knownRole.get(target.id) ?? (self && target.id === self.id ? self.role : null);
+    if (targetRole === 'loyal') return false;
+  }
+
+  switch (event.cardName) {
+    case 'dismantle':
+      return hasAnyPublicCard(lord);
+    case 'snatch':
+      return (
+        hasAnyPublicCard(lord) &&
+        !lord.skills.includes('qianxun') &&
+        (source.skills.includes('qicai') || viewDistance(view, source, lord) <= 1)
+      );
+    case 'duel':
+      return !(lord.skills.includes('kongcheng') && lord.handCount === 0);
+    case 'fire_attack':
+      return lord.handCount > 0;
+    case 'indulgence':
+      return !lord.skills.includes('qianxun') && !lord.judgeZone.some((card) => card.name === 'indulgence');
+    case 'supply_shortage':
+      return (
+        (source.skills.includes('qicai') || viewDistance(view, source, lord) <= 1) &&
+        !lord.judgeZone.some((card) => card.name === 'supply_shortage')
+      );
+    default:
+      return false;
+  }
 }
 
 function applyEvent(
@@ -291,6 +532,7 @@ function applyEvent(
   }
   if (event.kind === 'death' && event.target !== null && event.role) {
     memory.knownRole.set(event.target, event.role);
+    if (event.target === lordId) memory.lordDeathSeq = Math.min(memory.lordDeathSeq, event.seq);
   }
 
   const src = event.source;
@@ -351,8 +593,13 @@ function applyEvent(
         addEvidence(memory, src, 'hostileGroupLord', EV.hostileGroupLord, event.seq, `【${eventNoteLabel(event)}】波及主公`);
       }
       // 有益錦囊（【桃園結義】【五穀豐登】）是全場效果，反賊也會用；不當作「幫助主公」證據。
-    } else if (HOSTILE_GROUP.has(event.cardName) && looksRebel(memory, event.target)) {
-      addEvidence(memory, src, 'helpRebel', EV.helpRebel, event.seq, `【${eventNoteLabel(event)}】波及可疑反賊`);
+    } else {
+      if (lordId !== null && spareLordOpportunity(view, memory, selfId, event, lordId)) {
+        addEvidence(memory, src, 'spareLord', EV.spareLord, event.seq, '能攻擊主公卻選擇其他目標');
+      }
+      if (HOSTILE_GROUP.has(event.cardName) && looksRebel(memory, event.target)) {
+        addEvidence(memory, src, 'helpRebel', EV.helpRebel, event.seq, `【${eventNoteLabel(event)}】波及可疑反賊`);
+      }
     }
     return;
   }

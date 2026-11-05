@@ -739,6 +739,148 @@ describe('技能與牌只對合理目標使用', () => {
     expect(p4.loyal).toBeLessThan(0.5);
   });
 
+  it('顯示性偏好：主公是合法目標卻選別人 → spareLord 弱忠誠證據', () => {
+    const state = fresh();
+    state.players[1]!.hand = [card(9800, 'peach')];
+    state.publicEvents = [{ seq: 1, kind: 'use', source: 2, target: 3, cardName: 'indulgence' }];
+    const memory = createAiMemory();
+    updateMemory(viewFor(state, 0), memory);
+
+    expect(memory.beliefAcc.get(2)?.get('spareLord')).toBeDefined();
+    // 三個假設的似然都小於 1，但反賊的似然最低 → 相對更像忠臣／內奸。
+    const ev = memory.belief.get(2)!;
+    expect(ev.rebel).toBeLessThan(ev.loyal);
+    expect(ev.rebel).toBeLessThan(ev.spy);
+    expect(memory.rebelScore.get(2)).toBeLessThan(0);
+  });
+
+  it('spareLord：主公非合法目標、來源 1 血或目標是公開忠臣時都不計', () => {
+    const state = fresh();
+    // 火攻需要目標有手牌；主公 0 手牌 → 不是合法目標。
+    state.players[1]!.hand = [];
+    state.publicEvents = [{ seq: 1, kind: 'use', source: 2, target: 3, cardName: 'fire_attack' }];
+    const noHand = createAiMemory();
+    updateMemory(viewFor(state, 0), noHand);
+    expect(noHand.beliefAcc.get(2)?.get('spareLord')).toBeUndefined();
+
+    // 1 血來源有自保理由，不構成忠誠證據。
+    state.players[1]!.hand = [card(9801, 'peach')];
+    state.players[2]!.hp = 1;
+    state.publicEvents = [{ seq: 1, kind: 'use', source: 2, target: 3, cardName: 'indulgence' }];
+    const lowHp = createAiMemory();
+    updateMemory(viewFor(state, 0), lowHp);
+    expect(lowHp.beliefAcc.get(2)?.get('spareLord')).toBeUndefined();
+
+    // 打公開忠臣不是「放過主公」的忠誠訊號。
+    state.players[2]!.hp = 4;
+    const knownLoyal = createAiMemory();
+    knownLoyal.knownRole.set(3, 'loyal');
+    state.publicEvents = [{ seq: 1, kind: 'use', source: 2, target: 3, cardName: 'indulgence' }];
+    updateMemory(viewFor(state, 0), knownLoyal);
+    expect(knownLoyal.beliefAcc.get(2)?.get('spareLord')).toBeUndefined();
+  });
+
+  it('反賊靠聯合後驗保護隊友：忠臣名額被佔後不再攻擊另一名未知者', () => {
+    const state = fresh();
+    state.players[2]!.generalId = 'cao_cao';
+    state.players[3]!.generalId = 'liu_bei';
+    state.players[2]!.role = 'loyal';
+    state.players[3]!.role = 'rebel';
+    state.players[4]!.role = 'spy';
+    state.players[4]!.alive = false;
+    state.players[4]!.hp = 0;
+    state.players[0]!.hand = [card(9700, 'slash', 'spade', 7)];
+
+    const atLoyalLooking: PlayOption = {
+      id: 'slash:2',
+      label: '殺 → 像忠臣的人',
+      kind: 'play',
+      cards: [9700],
+      targets: [2],
+      asCard: 'slash',
+    };
+    const atAlly: PlayOption = {
+      id: 'slash:3',
+      label: '殺 → 像另一名反賊的人',
+      kind: 'play',
+      cards: [9700],
+      targets: [3],
+      asCard: 'slash',
+    };
+    const pass: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+    const request: Request = {
+      id: 1,
+      player: 0,
+      prompt: '出牌階段：請選擇行動',
+      kind: 'action',
+      options: [atLoyalLooking, atAlly, pass],
+      context: '出牌階段',
+    };
+    state.pending = request;
+
+    const memory = createAiMemory();
+    seedBeliefScore(memory, 2, -6); // 玩家 2 有忠臣行為證據
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:2',
+    });
+  });
+
+  it('seed 3226659290 情境：忠臣「有機會卻不打主公」讓反賊認出隊友', () => {
+    const state = createGame({ seed: 3226659290, humanId: 0, humanGeneralId: 'gan_ning' });
+    // 0 主公甘寧、1 忠臣張遼、2 內奸呂布、3 反賊孫權、4 反賊孫尚香。
+    expect(state.players.map((item) => item.role)).toEqual(['lord', 'loyal', 'spy', 'rebel', 'rebel']);
+    state.players[2]!.alive = false;
+    state.players[2]!.hp = 0;
+    state.players[0]!.hand = [card(9900, 'peach')];
+    // 張遼在主公是合法目標時，選擇對孫尚香用【樂不思蜀】。
+    state.publicEvents = [{ seq: 1, kind: 'use', source: 1, target: 4, cardName: 'indulgence' }];
+
+    const memory = createAiMemory();
+    const view = viewFor(state, 3); // 孫權視角
+    updateMemory(view, memory, 3);
+    const self = view.players[3]!;
+    const zhangLiao = beliefProbs(view, self, memory, view.players[1]!);
+    const sunShangxiang = beliefProbs(view, self, memory, view.players[4]!);
+    expect(zhangLiao.loyal).toBeGreaterThan(zhangLiao.rebel);
+    // 內奸已死且忠臣名額被張遼佔走 → 孫尚香被推為隊友。
+    expect(sunShangxiang.rebel).toBeGreaterThan(0.6);
+
+    // 孫權不會再把孫尚香當目標；若張遼在範圍內，應改打張遼。
+    state.players[3]!.equips.weapon = card(9901, 'qinggang', 'spade', 1);
+    state.players[3]!.hand = [card(9902, 'slash', 'spade', 7)];
+    const atZhangLiao: PlayOption = {
+      id: 'slash:1',
+      label: '殺 → 張遼',
+      kind: 'play',
+      cards: [9902],
+      targets: [1],
+      asCard: 'slash',
+    };
+    const atSunShangxiang: PlayOption = {
+      id: 'slash:4',
+      label: '殺 → 孫尚香',
+      kind: 'play',
+      cards: [9902],
+      targets: [4],
+      asCard: 'slash',
+    };
+    const pass: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+    const request: Request = {
+      id: 1,
+      player: 3,
+      prompt: '出牌階段：請選擇行動',
+      kind: 'action',
+      options: [atZhangLiao, atSunShangxiang, pass],
+      context: '出牌階段',
+    };
+    state.pending = request;
+    expect(decide(viewFor(state, 3), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:1',
+    });
+  });
+
   it('反賊不會攻擊已明顯曝露的同夥，但仍會打沒有線索的目標', () => {
     const state = fresh();
     state.players[0]!.hand = [card(9700, 'slash', 'spade', 7)];

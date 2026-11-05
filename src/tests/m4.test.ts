@@ -67,6 +67,32 @@ describe('M4 公開事件與身份信念', () => {
     expect(p3.spy + p3.loyal).toBeGreaterThan(p3.rebel);
   });
 
+  it('聯合後驗：一人佔走忠臣名額後，另一名未知者幾乎確定是反賊', () => {
+    const memory = createAiMemory();
+    const view = {
+      turnCount: 3,
+      pending: null,
+      players: [
+        player(0, 'rebel'),
+        player(1, 'lord'),
+        player(2, 'spy', false),
+        player(3, null),
+        player(4, null),
+      ],
+      events: [],
+    } as unknown as GameView;
+    seedBeliefScore(memory, 3, -6); // 玩家 3 有忠臣行為證據
+    const self = view.players[0]!;
+
+    const p3 = beliefProbs(view, self, memory, view.players[3]!);
+    const p4 = beliefProbs(view, self, memory, view.players[4]!);
+    // 內奸已死，剩餘身份只有 1 忠臣、1 反賊；3 佔走忠臣名額後 4 只能是反賊。
+    expect(p3.loyal).toBeGreaterThan(0.8);
+    expect(p4.rebel).toBeGreaterThan(0.8);
+    // 已公開的死亡身份直接 one-hot。
+    expect(beliefProbs(view, self, memory, view.players[2]!).spy).toBe(1);
+  });
+
   it('仁德公開事件：給主公偏忠臣、給可疑反賊偏反賊、破空城反向', () => {
     const memory = createAiMemory();
     const view = {
@@ -312,10 +338,16 @@ describe('M4 公開事件與身份信念', () => {
     expect(belief.cells.find((cell) => cell.target === 2)!.relation).toBe('enemy');
     // 兩次治療還不足以成為隊友。
     expect(belief.cells.find((cell) => cell.target === 3)!.relation).toBe('unknown');
-    // 治療加上瀕死救援累積足夠，可成為隊友。
+    // 治療加上瀕死救援是最強的信任證據，但兩名治療者競爭唯一忠臣名額；
+    // 聯合後驗會讓兩人的忠誠機率互相稀釋，而內奸也可能治療／救主公，
+    // 因此 4 的忠誠機率最高，卻不再直接升為隊友。
     const healer = belief.cells.find((cell) => cell.target === 4)!;
-    expect(healer.relation).toBe('ally');
+    expect(healer.relation).toBe('unknown');
     expect(healer.notes.some((note) => note.text.includes('救助主公'))).toBe(true);
+    const p3 = beliefProbs(view, view.players[0]!, memory, view.players[3]!);
+    const p4 = beliefProbs(view, view.players[0]!, memory, view.players[4]!);
+    expect(p4.loyal).toBeGreaterThanOrEqual(p3.loyal);
+    expect(p4.rebel).toBeLessThan(0.01);
   });
 
   it('只有上帝視角會提供 AI 信念', () => {
