@@ -160,6 +160,60 @@ describe('AI 拆牌判斷', () => {
     expect(countPlays(view, request)).toBeGreaterThan(0);
   });
 
+  it('有害牌已被無懈時，不為了讓敵人多吃傷害而反制（連鎖 2）', () => {
+    const state = fresh();
+    // 主公的【南蠻入侵】目前被無懈（連鎖 1），受影響者只有主公（觀察者的敵人）。
+    const request = wuxieRequest(1, [1], 'barbarian', 1);
+    state.pending = request;
+    const view = viewFor(state, 0);
+
+    expect(countPlays(view, request)).toBe(0);
+  });
+
+  it('有害牌波及自己且尚未被無懈時，仍會考慮抵消', () => {
+    const state = fresh();
+    const request = wuxieRequest(1, [0, 1], 'barbarian', 0);
+    state.pending = request;
+    const view = viewFor(state, 0);
+
+    expect(countPlays(view, request)).toBeGreaterThan(0);
+  });
+
+  it('反間：展示牌會歸目標，手牌貴重時不使用、低價值時使用', () => {
+    const state = fresh();
+    state.players[1]!.hp = 4;
+    const fanjian: PlayOption = {
+      id: 'fanjian:1',
+      label: '反間：令 主公 猜花色',
+      kind: 'play',
+      cards: [],
+      targets: [1],
+      skill: 'fanjian',
+    };
+    const passOption: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+    const request = actionRequest(0, [fanjian, passOption]);
+    state.pending = request;
+
+    // 手牌低價值（兩張【殺】）→ 反間值得。
+    state.players[0]!.hand = [card(9400, 'slash', 'spade'), card(9401, 'thunder_slash', 'club')];
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'fanjian:1',
+    });
+
+    // 手牌貴重（【桃】【閃】【無懈】）→ 不為了 1 點傷害送牌給對手。
+    state.players[0]!.hand = [
+      card(9402, 'peach', 'heart'),
+      card(9403, 'dodge', 'diamond'),
+      card(9404, 'nullification', 'club'),
+    ];
+    state.pending = request;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
   it('反間猜花色：避開自己手上最多的花色', () => {
     const state = fresh();
     state.players[0]!.hand = [

@@ -1348,7 +1348,16 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
           ? 35
           : -20;
       } else if (option.skill === 'fanjian') {
-        score += first && isConfirmedEnemy(view, self, first) ? 40 : -30;
+        if (!(first && isConfirmedEnemy(view, self, first))) {
+          score -= 30;
+        } else {
+          // 【反間】展示的牌（隨機手牌）結算後必歸目標，以手牌平均價值估計成本；
+          // 目標血少時 1 點傷害更有價值（DESIGN 7.3.13 F2）。
+          const hand = self.hand ?? [];
+          const avgHandValue =
+            hand.length > 0 ? hand.reduce((sum, card) => sum + cardValue(card.name), 0) / hand.length : 0;
+          score += 45 + (first.hp <= 2 ? 25 : 0) - avgHandValue;
+        }
       } else if (option.skill === 'jieyin') {
         // 結姻會同時回復自己與目標；幫敵人回體力是嚴重錯誤。
         if (firstEnemy > 0 && first && first.id !== self.id) {
@@ -1910,6 +1919,9 @@ function chooseResponse(
       else wantNullified = affectsEnemy; // 未知牌種採保守判斷
       if (beneficial || harmful) {
         if (wantNullified === currentlyNullified) return { type: 'pass' };
+        // 不為了讓敵人多吃一次有害效果而反制別人的【無懈可擊】（連鎖 2）；
+        // 自己的牌被無懈時仍可反制（DESIGN 7.3.13 F1）。
+        if (harmful && !wantNullified && request.source !== self.id) return { type: 'pass' };
       }
 
       const chance = affectsSelf ? 0.9 : affectsAlly ? 0.5 : affectsEnemy ? 0.4 : 0.05;
