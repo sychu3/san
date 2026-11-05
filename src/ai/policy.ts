@@ -156,6 +156,7 @@ function eventNoteLabel(event: PublicEvent): string {
 type Role3 = 'rebel' | 'loyal' | 'spy';
 const ROLE3: Role3[] = ['rebel', 'loyal', 'spy'];
 const P_ALLY = 0.6; // 關係視為隊友的機率門檻
+const P_SUSPECT_TARGET = 0.6; // spareLord：目標在觀察者眼中已明確偏向某身份時據此分層
 const P_NO_ALLY = 0.1; // 反賊：低於此視為非隊友（敵人）
 const P_ENEMY_REL = 0.85; // 主公／忠臣：關係視為敵人的敵意機率門檻
 const P_CONFIRM_LOYAL = 0.01; // 主公：P(忠) 低於此＝已確認敵人（致命／高成本閘用）
@@ -187,6 +188,8 @@ const EV = {
   // 顯示性偏好：主公是合法目標卻選擇其他目標（機會經嚴格條件過濾）。
   // 500 局實測率約 反 6.5%／忠 100%／奸 77%，這裡保守取比值約 2.3～3 倍。
   spareLord: rb(Math.log(0.3), Math.log(0.9), Math.log(0.72)),
+  // 目標在觀察者眼中已明確偏向反賊時，選擇打他更接近忠臣／內奸行為。
+  spareLordVsRebel: rb(Math.log(0.2), Math.log(1.1), Math.log(0.9)),
 };
 /** 同類型事件最多計入幾次，避免刷同一種行為（取代舊的軟性地板）。 */
 const EVIDENCE_COUNT: Record<string, number> = {
@@ -467,54 +470,69 @@ function hasAnyPublicCard(player: PlayerView): boolean {
 
 /**
  * 「有機會攻擊主公卻選擇其他目標」的機會判定（顯示性偏好）。
- * 只使用公開資訊並刻意保守：來源 1 血（自保）、目標是公開忠臣、
+ * 只使用公開資訊與觀察者自己的身份機率，並刻意保守：來源 1 血（自保）、
  * 主公空城／謙遜等情況都不算機會。
+ * 回傳目標在觀察者眼中的分類：'rebel' 用較強忠誠表、'spy'／'unknown' 用一般表、
+ * null 表示不是機會（含「目標已像忠臣」——打疑似忠臣不是忠誠表現）。
  */
-function spareLordOpportunity(
+function spareLordTargetKind(
   view: GameView,
   memory: AiMemory,
   selfId: PlayerId | null,
   event: PublicEvent,
   lordId: PlayerId,
-): boolean {
-  if (event.cardName === undefined || !SPARE_LORD_CARDS.has(event.cardName)) return false;
+): 'unknown' | 'rebel' | 'spy' | null {
+  if (event.cardName === undefined || !SPARE_LORD_CARDS.has(event.cardName)) return null;
   const lord = view.players.find((player) => player.id === lordId);
   const source = event.source === null ? null : view.players.find((player) => player.id === event.source);
-  if (!lord || !source || !source.alive) return false;
+  if (!lord || !source || !source.alive) return null;
   // 事件發生時主公必須還活著；若現在已死，以死亡序號回溯。
-  if (!lord.alive && event.seq >= memory.lordDeathSeq) return false;
+  if (!lord.alive && event.seq >= memory.lordDeathSeq) return null;
   // 1 血角色有充分的自保理由，不打主公不構成忠誠證據。
-  if (source.hp <= 1) return false;
-  // 打公開忠臣不是「放過主公」的忠誠訊號。
+  if (source.hp <= 1) return null;
+
   const target = event.target === null ? null : view.players.find((player) => player.id === event.target);
-  if (target) {
-    const self = selfId === null ? null : view.players.find((player) => player.id === selfId) ?? null;
-    const targetRole = target.role ?? memory.knownRole.get(target.id) ?? (self && target.id === self.id ? self.role : null);
-    if (targetRole === 'loyal') return false;
+  if (!target) return null;
+  const self = selfId === null ? null : view.players.find((player) => player.id === selfId) ?? null;
+
+  // 先用公開已知身份；未知者再用觀察者自己的機率（在本事件證據加入前計算）。
+  let kind: 'unknown' | 'rebel' | 'spy' = 'unknown';
+  const targetRole =
+    target.role ?? memory.knownRole.get(target.id) ?? (self && target.id === self.id ? self.role : null);
+  if (targetRole === 'loyal') return null;
+  if (targetRole === 'rebel') kind = 'rebel';
+  else if (targetRole === 'spy') kind = 'spy';
+  else if (self) {
+    const pr = beliefProbs(view, self, memory, target);
+    if (pr.loyal >= P_SUSPECT_TARGET && pr.loyal >= pr.rebel && pr.loyal >= pr.spy) return null;
+    if (pr.rebel >= P_SUSPECT_TARGET && pr.rebel >= pr.loyal && pr.rebel >= pr.spy) kind = 'rebel';
+    else if (pr.spy >= P_SUSPECT_TARGET && pr.spy >= pr.rebel && pr.spy >= pr.loyal) kind = 'spy';
   }
 
   switch (event.cardName) {
     case 'dismantle':
-      return hasAnyPublicCard(lord);
+      return hasAnyPublicCard(lord) ? kind : null;
     case 'snatch':
-      return (
-        hasAnyPublicCard(lord) &&
+      return hasAnyPublicCard(lord) &&
         !lord.skills.includes('qianxun') &&
         (source.skills.includes('qicai') || viewDistance(view, source, lord) <= 1)
-      );
+        ? kind
+        : null;
     case 'duel':
-      return !(lord.skills.includes('kongcheng') && lord.handCount === 0);
+      return !(lord.skills.includes('kongcheng') && lord.handCount === 0) ? kind : null;
     case 'fire_attack':
-      return lord.handCount > 0;
+      return lord.handCount > 0 ? kind : null;
     case 'indulgence':
-      return !lord.skills.includes('qianxun') && !lord.judgeZone.some((card) => card.name === 'indulgence');
+      return !lord.skills.includes('qianxun') && !lord.judgeZone.some((card) => card.name === 'indulgence')
+        ? kind
+        : null;
     case 'supply_shortage':
-      return (
-        (source.skills.includes('qicai') || viewDistance(view, source, lord) <= 1) &&
+      return (source.skills.includes('qicai') || viewDistance(view, source, lord) <= 1) &&
         !lord.judgeZone.some((card) => card.name === 'supply_shortage')
-      );
+        ? kind
+        : null;
     default:
-      return false;
+      return null;
   }
 }
 
@@ -594,8 +612,12 @@ function applyEvent(
       }
       // 有益錦囊（【桃園結義】【五穀豐登】）是全場效果，反賊也會用；不當作「幫助主公」證據。
     } else {
-      if (lordId !== null && spareLordOpportunity(view, memory, selfId, event, lordId)) {
-        addEvidence(memory, src, 'spareLord', EV.spareLord, event.seq, '能攻擊主公卻選擇其他目標');
+      const spareKind = lordId === null ? null : spareLordTargetKind(view, memory, selfId, event, lordId);
+      if (spareKind !== null) {
+        // 目標疑似反賊時用較強表；未知／疑似內奸維持一般表。
+        // 疑似忠臣已由 spareLordTargetKind 回傳 null（不記）。
+        const spareTable = spareKind === 'rebel' ? EV.spareLordVsRebel : EV.spareLord;
+        addEvidence(memory, src, 'spareLord', spareTable, event.seq, '能攻擊主公卻選擇其他目標');
       }
       if (HOSTILE_GROUP.has(event.cardName) && looksRebel(memory, event.target)) {
         addEvidence(memory, src, 'helpRebel', EV.helpRebel, event.seq, `【${eventNoteLabel(event)}】波及可疑反賊`);

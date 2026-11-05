@@ -780,6 +780,30 @@ describe('技能與牌只對合理目標使用', () => {
     expect(knownLoyal.beliefAcc.get(2)?.get('spareLord')).toBeUndefined();
   });
 
+  it('spareLord：目標已被觀察者懷疑是忠臣時，打他不算忠心', () => {
+    const state = fresh();
+    state.publicEvents = [{ seq: 1, kind: 'use', source: 2, target: 3, cardName: 'indulgence' }];
+    const memory = createAiMemory();
+    // 忠臣專屬證據（例如治療過主公）；seedBeliefScore 會把忠／奸一起提高，不適用。
+    memory.belief.set(3, { rebel: -4, loyal: 4, spy: -4 });
+    memory.beliefVersion += 1;
+    updateMemory(viewFor(state, 0), memory, 0);
+    expect(memory.beliefAcc.get(2)?.get('spareLord')).toBeUndefined();
+  });
+
+  it('spareLord：目標已被觀察者懷疑是反賊時，用較強的忠誠表', () => {
+    const state = fresh();
+    state.publicEvents = [{ seq: 1, kind: 'use', source: 2, target: 3, cardName: 'indulgence' }];
+    const memory = createAiMemory();
+    seedBeliefScore(memory, 3, 8); // 觀察者已懷疑 3 是反賊
+    updateMemory(viewFor(state, 0), memory, 0);
+    const ev = memory.beliefAcc.get(2)?.get('spareLord');
+    expect(ev).toBeDefined();
+    expect(ev!.rebel).toBeCloseTo(Math.log(0.2), 5);
+    expect(ev!.loyal).toBeCloseTo(Math.log(1.1), 5);
+    expect(ev!.spy).toBeCloseTo(Math.log(0.9), 5);
+  });
+
   it('反賊靠聯合後驗保護隊友：忠臣名額被佔後不再攻擊另一名未知者', () => {
     const state = fresh();
     state.players[2]!.generalId = 'cao_cao';
