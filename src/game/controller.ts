@@ -208,6 +208,7 @@ export class GameController {
       difficulty: this.difficulty,
       responses: [...this.responses],
       humanGeneralId: this.state.players[this.humanId]?.generalId,
+      humanRole: this.state.players[this.humanId]?.role,
     });
   }
 

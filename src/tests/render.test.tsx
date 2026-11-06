@@ -5,7 +5,9 @@ import { Seat } from '../ui/Seat';
 import { PromptPanel } from '../ui/PromptPanel';
 import { LogPanel } from '../ui/LogPanel';
 import { CardView } from '../ui/CardView';
+import { SetupScreen } from '../ui/SetupScreen';
 import { createGame, viewFor } from '../engine/state';
+import { createSetup } from '../game/setup';
 import type { Card, Request } from '../engine/types';
 
 describe('UI 渲染煙霧測試', () => {
@@ -26,6 +28,19 @@ describe('UI 渲染煙霧測試', () => {
     expect(html).toContain('setup__general');
     expect(html).toContain('setup__seats');
     expect(html).toContain('號位');
+  });
+
+  it('SetupScreen 提供自訂模式入口（自由選身份與武將）', () => {
+    const setup = createSetup(0, 777);
+    const html = renderToString(
+      <SetupScreen
+        setup={setup}
+        onPick={() => undefined}
+        onPickCustom={() => undefined}
+        onPickRole={() => undefined}
+      />,
+    );
+    expect(html).toContain('自訂模式');
   });
 
   it('App 頂欄提供主題切換', () => {

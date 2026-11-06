@@ -76,6 +76,33 @@ describe('開局選將', () => {
     expect(chosen.players[0]!.maxHp).toBe(getGeneral(target).maxHp + 1);
   });
 
+  it('指定 humanRole 會換上該身份，且不影響牌堆與身份總數', () => {
+    const base = createGame({ seed: 4243 });
+    const chosen = createGame({ seed: 4243, humanId: 0, humanRole: 'lord' });
+
+    expect(chosen.players[0]!.role).toBe('lord');
+    expect(chosen.players[0]!.maxHp).toBe(getGeneral(chosen.players[0]!.generalId).maxHp + 1);
+    expect([...chosen.players.map((player) => player.role)].sort()).toEqual(
+      [...base.players.map((player) => player.role)].sort(),
+    );
+    expect(chosen.deck.map((card) => card.id)).toEqual(base.deck.map((card) => card.id));
+  });
+
+  it('createSetup 指定身份時，預覽與正式對局一致', () => {
+    const setup = createSetup(0, 4243, 'lord');
+    expect(setup.role).toBe('lord');
+    expect(setup.lordSeat).toBe(0);
+    expect(setup.lordGeneralId).toBeNull();
+
+    const state = createGame({ seed: 4243, humanId: 0, humanRole: 'lord' });
+    expect(state.players[0]!.role).toBe('lord');
+  });
+
+  it('humanRole 需要合法的座位與身份', () => {
+    expect(() => createGame({ seed: 1, humanRole: 'lord' })).toThrow();
+    expect(() => createGame({ seed: 1, humanId: 0, humanRole: 'emperor' as never })).toThrow();
+  });
+
   it('指定 humanGeneralId 會換上該武將，且不影響身份與牌堆', () => {
     const base = createGame({ seed: 4242 });
     const target = generalCandidates(4242)[0]!;

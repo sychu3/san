@@ -1,14 +1,21 @@
-import { getGeneral, KINGDOM_LABELS, ROLE_GOALS, ROLE_LABELS } from '../data/generals';
+import { useMemo, useState } from 'react';
+import { ALL_GENERAL_IDS, getGeneral, KINGDOM_LABELS, ROLE_GOALS, ROLE_LABELS } from '../data/generals';
 import { SKILL_META } from '../engine/skills';
-import type { GeneralDef } from '../engine/types';
+import type { GeneralDef, Role } from '../engine/types';
 import type { GameSetup } from '../game/setup';
 
 interface Props {
   setup: GameSetup;
   onPick: (generalId: string) => void;
+  /** 自訂模式：指定身份與任意武將後開始對局。 */
+  onPickCustom?: (role: Role, generalId: string) => void;
+  /** 自訂模式切換身份時重新產生預覽（主公座位／主公武將）。 */
+  onPickRole?: (role: Role) => void;
   onLoadReplay?: () => void;
   onShowRules?: () => void;
 }
+
+const ROLES: readonly Role[] = ['lord', 'loyal', 'rebel', 'spy'];
 
 const KINGDOM_CLASS: Record<string, string> = {
   wei: 'setup__general--wei',
@@ -60,11 +67,36 @@ function GeneralFacts({ general, hpBonus = 0 }: { general: GeneralDef; hpBonus?:
  * 比照原版，同時顯示主公的武將、主公與自己的座位，以及彼此距離。
  * 只顯示公開的武將資料，不涉及任何手牌或隱藏身份。
  */
-export function SetupScreen({ setup, onPick, onLoadReplay, onShowRules }: Props) {
+export function SetupScreen({ setup, onPick, onPickCustom, onPickRole, onLoadReplay, onShowRules }: Props) {
   const roleLabel = ROLE_LABELS[setup.role] ?? setup.role;
   const isLord = setup.role === 'lord';
   const lordBonus = 1;
   const lordGeneral = setup.lordGeneralId ? getGeneral(setup.lordGeneralId) : null;
+  const [customMode, setCustomMode] = useState(false);
+  const [customRole, setCustomRole] = useState<Role>('lord');
+  const [customGeneral, setCustomGeneral] = useState<string | null>(null);
+
+  const selectableGenerals = useMemo(
+    () => ALL_GENERAL_IDS.filter((id) => id !== setup.lordGeneralId),
+    [setup.lordGeneralId],
+  );
+  const chosenGeneral =
+    customGeneral && selectableGenerals.includes(customGeneral) ? customGeneral : null;
+
+  const enterCustom = () => {
+    setCustomMode(true);
+    setCustomGeneral(null);
+    setCustomRole('lord');
+    onPickRole?.('lord');
+  };
+  const exitCustom = () => {
+    setCustomMode(false);
+    setCustomGeneral(null);
+  };
+  const chooseRole = (role: Role) => {
+    setCustomRole(role);
+    onPickRole?.(role);
+  };
 
   return (
     <div className="setup" role="dialog" aria-modal="true" aria-labelledby="setup-title">
@@ -117,25 +149,74 @@ export function SetupScreen({ setup, onPick, onLoadReplay, onShowRules }: Props)
           <p className="setup__lord-note setup__lord-note--self">你就是主公，先為自己選一位武將。</p>
         )}
 
-        <p className="setup__hint">從以下三名武將中選擇一位（3 選 1）</p>
+        {customMode ? (
+          <>
+            <p className="setup__hint">自訂模式（測試用）：指定身份並從全部武將中任選一位</p>
+            <div className="setup__roles">
+              {ROLES.map((role) => (
+                <button
+                  key={role}
+                  type="button"
+                  className={`setup__role-btn ${customRole === role ? 'setup__role-btn--active' : ''}`}
+                  onClick={() => chooseRole(role)}
+                >
+                  {ROLE_LABELS[role]}
+                </button>
+              ))}
+            </div>
+            <p className="setup__hint">選擇武將（{selectableGenerals.length} 名可選）</p>
+            <div className="setup__generals setup__generals--all">
+              {selectableGenerals.map((id) => {
+                const general = getGeneral(id);
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`setup__general ${KINGDOM_CLASS[general.kingdom] ?? ''} ${
+                      chosenGeneral === id ? 'setup__general--chosen' : ''
+                    }`}
+                    onClick={() => setCustomGeneral(id)}
+                  >
+                    <GeneralFacts general={general} hpBonus={customRole === 'lord' ? lordBonus : 0} />
+                    <span className="setup__pick">
+                      {chosenGeneral === id ? '已選擇' : '選擇'} {general.name}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              className="primary-btn setup__start"
+              disabled={!chosenGeneral}
+              onClick={() => chosenGeneral && onPickCustom?.(customRole, chosenGeneral)}
+            >
+              以「{ROLE_LABELS[customRole]}・{chosenGeneral ? getGeneral(chosenGeneral).name : '未選武將'}」開始
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="setup__hint">從以下三名武將中選擇一位（3 選 1）</p>
 
-        <div className="setup__generals">
-          {setup.candidates.map((id, index) => {
-            const general = getGeneral(id);
-            return (
-              <button
-                key={id}
-                type="button"
-                className={`setup__general ${KINGDOM_CLASS[general.kingdom] ?? ''}`}
-                onClick={() => onPick(id)}
-                autoFocus={index === 0}
-              >
-                <GeneralFacts general={general} hpBonus={isLord ? lordBonus : 0} />
-                <span className="setup__pick">選擇 {general.name}</span>
-              </button>
-            );
-          })}
-        </div>
+            <div className="setup__generals">
+              {setup.candidates.map((id, index) => {
+                const general = getGeneral(id);
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`setup__general ${KINGDOM_CLASS[general.kingdom] ?? ''}`}
+                    onClick={() => onPick(id)}
+                    autoFocus={index === 0}
+                  >
+                    <GeneralFacts general={general} hpBonus={isLord ? lordBonus : 0} />
+                    <span className="setup__pick">選擇 {general.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
 
         <p className="setup__seed">seed {setup.seed}</p>
 
@@ -145,6 +226,16 @@ export function SetupScreen({ setup, onPick, onLoadReplay, onShowRules }: Props)
               規則
             </button>
           )}
+          {onPickCustom &&
+            (customMode ? (
+              <button type="button" className="ghost-btn" onClick={exitCustom}>
+                返回一般選將
+              </button>
+            ) : (
+              <button type="button" className="ghost-btn" onClick={enterCustom}>
+                自訂模式（測試主公技）
+              </button>
+            ))}
           {onLoadReplay && (
             <button type="button" className="ghost-btn" onClick={onLoadReplay}>
               讀檔重播

@@ -45,10 +45,17 @@ export function generalCandidates(
   return shuffled.slice(0, Math.max(0, Math.min(count, shuffled.length)));
 }
 
-/** 建立開局資訊（身份、主公武將、座位與候選名單）；不啟動引擎。 */
-export function createSetup(humanId: PlayerId = 0, seed: number = randomSeed()): GameSetup {
+/**
+ * 建立開局資訊（身份、主公武將、座位與候選名單）；不啟動引擎。
+ * 傳入 `humanRole` 時用於自訂對局：身份改由玩家指定，其餘預覽方式不變。
+ */
+export function createSetup(
+  humanId: PlayerId = 0,
+  seed: number = randomSeed(),
+  humanRole?: Role,
+): GameSetup {
   // 用一個預覽牌局取得身份與初始配將；身份與 seed 的對應和正式對局完全一致。
-  const preview = createGame({ seed, humanId });
+  const preview = createGame({ seed, humanId, ...(humanRole ? { humanRole } : {}) });
   const role = preview.players[humanId]?.role;
   if (!role) throw new Error(`不合法的人類座位：${humanId}`);
   const lord = preview.players.find((player) => player.role === 'lord');

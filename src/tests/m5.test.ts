@@ -64,6 +64,23 @@ describe('M5 存檔與重播', () => {
     const badGeneral = { ...base, humanGeneralId: 'not_a_general' };
     expect(isValidSave(badGeneral)).toBe(false);
     expect(isValidSave({ ...base, humanGeneralId: 'cao_cao' })).toBe(true);
+    expect(isValidSave({ ...base, humanRole: 'emperor' })).toBe(false);
+    expect(isValidSave({ ...base, humanRole: 'lord' })).toBe(true);
+  });
+
+  it('自訂身份存檔會記下身份，重播能重現同一身份', () => {
+    const controller = new GameController({
+      seed: 606,
+      humanId: 0,
+      humanGeneralId: 'liu_bei',
+      humanRole: 'lord',
+    });
+    const save = controller.getSaveFile();
+    expect(save.humanRole).toBe('lord');
+
+    const replay = buildReplay(save);
+    expect(replay.views[0]!.players[0]!.role).toBe('lord');
+    expect(replay.views[0]!.players[0]!.generalName).toBe(getGeneral('liu_bei').name);
   });
 
   it('存檔會記下選擇的武將，重播能重現同一位武將', () => {
@@ -126,13 +143,19 @@ describe('M5 存檔與重播', () => {
 });
 
 describe('M5 設定', () => {
-  it('設定可寫入與讀回，損壞時回到預設', () => {
+  it('設定可寫入與讀回，損壞時回到預設（含高手難度）', () => {
     const storage = fakeStorage();
-    persistSettings({ sound: true, animation: 'fast', theme: 'light' }, storage);
-    expect(loadSettings(storage)).toEqual({ sound: true, animation: 'fast', theme: 'light' });
+    persistSettings({ sound: true, animation: 'fast', theme: 'light', difficulty: 'easy' }, storage);
+    expect(loadSettings(storage)).toEqual({
+      sound: true,
+      animation: 'fast',
+      theme: 'light',
+      difficulty: 'easy',
+    });
 
     storage.store.set(SETTINGS_STORAGE_KEY, '{壞掉');
     expect(loadSettings(storage)).toEqual(DEFAULT_SETTINGS);
+    expect(DEFAULT_SETTINGS.difficulty).toBe('hard');
   });
 
   it('sanitizeSettings 會過濾非法值', () => {
@@ -141,13 +164,18 @@ describe('M5 設定', () => {
       sound: false,
       animation: 'full',
       theme: 'dark',
+      difficulty: 'hard',
     });
-    expect(sanitizeSettings({ sound: true, animation: 'off', theme: 'light' })).toEqual({
+    expect(
+      sanitizeSettings({ sound: true, animation: 'off', theme: 'light', difficulty: 'normal' }),
+    ).toEqual({
       sound: true,
       animation: 'off',
       theme: 'light',
+      difficulty: 'normal',
     });
     expect(sanitizeSettings({ theme: 'system' }).theme).toBe('system');
+    expect(sanitizeSettings({ difficulty: 'impossible' }).difficulty).toBe('hard');
   });
 
   it('resolveTheme 會把 system 依系統偏好解析成深色或淺色', () => {

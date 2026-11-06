@@ -22,6 +22,7 @@ export function buildReplay(save: SaveFile): ReplayData {
     seed: save.seed,
     humanId: save.humanId,
     ...(save.humanGeneralId ? { humanGeneralId: save.humanGeneralId } : {}),
+    ...(save.humanRole ? { humanRole: save.humanRole } : {}),
   });
   const generator = runGame(state);
   const aiRng = { rngState: (state.seed ^ AI_RNG_XOR) >>> 0 || 1 };

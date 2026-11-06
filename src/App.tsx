@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { PlayerId, Response } from './engine/types';
+import type { PlayerId, Response, Role } from './engine/types';
 import { winnerText } from './engine/state';
 import { ROLE_GOALS, ROLE_LABELS } from './data/generals';
 import { GameController } from './game/controller';
@@ -47,15 +47,15 @@ export default function App() {
   // 開局前先決定身份，再讓玩家從三名候選武將中選一個。
   const [setup, setSetup] = useState<GameSetup | null>(() => createSetup());
   const [started, setStarted] = useState(false);
+  const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [controller, setController] = useState(
-    () => new GameController({ seed: setup?.seed, stepMode: true }),
+    () => new GameController({ seed: setup?.seed, stepMode: true, difficulty: settings.difficulty }),
   );
   const [liveView, setLiveView] = useState(() => controller.getView());
   const [selectedCards, setSelectedCards] = useState<number[]>([]);
   const [selectedPlayers, setSelectedPlayers] = useState<PlayerId[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
-  const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [showSettings, setShowSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [hitId, setHitId] = useState<PlayerId | null>(null);
@@ -235,6 +235,30 @@ export default function App() {
     resetTransient();
   };
 
+  /** 自訂模式：切換身份時重新產生預覽（主公座位與主公武將）。 */
+  const updateSetupRole = (role: Role) => {
+    if (!setup) return;
+    setSetup(createSetup(controller.humanId, setup.seed, role));
+  };
+
+  /** 自訂模式：以指定身份與任意武將開始對局。 */
+  const startCustomGame = (role: Role, generalId: string) => {
+    if (!setup) return;
+    const next = new GameController({
+      seed: setup.seed,
+      humanId: controller.humanId,
+      humanGeneralId: generalId,
+      humanRole: role,
+      difficulty: controller.getDifficulty(),
+      stepMode: controller.isStepMode(),
+    });
+    setController(next);
+    setLiveView(next.getView());
+    setSetup(null);
+    setStarted(true);
+    resetTransient();
+  };
+
   const restart = beginSetup;
 
   const saveGame = () => {
@@ -315,6 +339,7 @@ export default function App() {
               const current = DIFFICULTY_ORDER.indexOf(controller.getDifficulty());
               const next = DIFFICULTY_ORDER[(current + 1) % DIFFICULTY_ORDER.length]!;
               controller.setDifficulty(next);
+              setSettings((latest) => ({ ...latest, difficulty: next }));
             }}
           >
             AI：{DIFFICULTY_LABELS[controller.getDifficulty()] ?? controller.getDifficulty()}
@@ -534,8 +559,11 @@ export default function App() {
 
       {setup && (
         <SetupScreen
+          key={setup.seed}
           setup={setup}
           onPick={startGameWithGeneral}
+          onPickCustom={startCustomGame}
+          onPickRole={updateSetupRole}
           onLoadReplay={loadReplay}
           onShowRules={() => setShowHelp(true)}
         />

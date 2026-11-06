@@ -1,3 +1,5 @@
+import type { Difficulty } from '../engine/types';
+
 export type AnimationMode = 'full' | 'fast' | 'off';
 
 /** 佈景主題；`system` 跟隨作業系統的淺色／深色偏好。 */
@@ -13,9 +15,18 @@ export interface Settings {
   animation: AnimationMode;
   /** 佈景主題；預設深色。 */
   theme: ThemeMode;
+  /** AI 難度；預設高手。 */
+  difficulty: Difficulty;
 }
 
-export const DEFAULT_SETTINGS: Settings = { sound: false, animation: 'full', theme: 'dark' };
+export const DEFAULT_SETTINGS: Settings = {
+  sound: false,
+  animation: 'full',
+  theme: 'dark',
+  difficulty: 'hard',
+};
+
+const DIFFICULTIES: readonly Difficulty[] = ['easy', 'normal', 'hard'];
 
 export const SETTINGS_STORAGE_KEY = 'sgs:settings';
 
@@ -32,7 +43,10 @@ export function sanitizeSettings(value: unknown): Settings {
   const theme = THEME_MODES.includes(raw.theme as ThemeMode)
     ? (raw.theme as ThemeMode)
     : DEFAULT_SETTINGS.theme;
-  return { sound: raw.sound === true, animation, theme };
+  const difficulty = DIFFICULTIES.includes(raw.difficulty as Difficulty)
+    ? (raw.difficulty as Difficulty)
+    : DEFAULT_SETTINGS.difficulty;
+  return { sound: raw.sound === true, animation, theme, difficulty };
 }
 
 /** 把設定中的主題解析成實際要套用的深色或淺色。 */

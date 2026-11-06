@@ -32,6 +32,11 @@ export interface CreateGameOptions {
    * 因此同一 seed 的身份與牌堆順序不受選擇影響。
    */
   humanGeneralId?: string;
+  /**
+   * 人類玩家指定的身份（自訂對局用）；只把該身份換到人類座位，
+   * 不消耗任何隨機數。需要同時提供 `humanId`。
+   */
+  humanRole?: Role;
 }
 
 const FIVE_PLAYER_ROLES: readonly Role[] = ['lord', 'loyal', 'rebel', 'rebel', 'spy'];
@@ -69,6 +74,19 @@ export function createGame(options: CreateGameOptions = {}): GameState {
   const roles = shuffle([...FIVE_PLAYER_ROLES], rng);
   const generals = shuffle([...generalIds], rng);
   const deck = shuffle(createDeck(options.pool ?? 'full'), rng);
+
+  // 自訂身份：只交換座位上的身份，不動隨機數，讓牌堆與其他配將不受影響。
+  if (options.humanRole !== undefined) {
+    const humanId = options.humanId;
+    if (humanId === undefined || !Number.isInteger(humanId) || humanId < 0 || humanId >= 5) {
+      throw new Error(`不合法的人類座位：${humanId}`);
+    }
+    const desiredIndex = roles.indexOf(options.humanRole);
+    if (desiredIndex < 0) throw new Error(`不合法的人類身份：${options.humanRole}`);
+    const displaced = roles[humanId]!;
+    roles[humanId] = options.humanRole;
+    roles[desiredIndex] = displaced;
+  }
 
   // 人類選將：只交換座位上的武將，不動隨機數，讓身份與牌堆和預覽一致。
   if (options.humanId !== undefined && options.humanGeneralId !== undefined) {

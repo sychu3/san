@@ -1,4 +1,4 @@
-import type { Difficulty, PlayerId, Response } from '../engine/types';
+import type { Difficulty, PlayerId, Response, Role } from '../engine/types';
 import { GENERAL_INDEX } from '../data/generals';
 import { GAME_VERSION } from '../engine/state';
 
@@ -19,6 +19,8 @@ export interface SaveFile {
   responses: SavedResponse[];
   /** 人類選擇的武將；舊存檔沒有此欄位時沿用 seed 預設武將。 */
   humanGeneralId?: string;
+  /** 人類的身份（自訂對局）；重播時需強制同一身份。 */
+  humanRole?: Role;
 }
 
 export const SAVE_KEY = 'sgs:save';
@@ -28,6 +30,7 @@ export const SETTINGS_KEY = 'sgs:settings';
 export const AI_RNG_XOR = 0x9e3779b9;
 
 const DIFFICULTIES: readonly Difficulty[] = ['easy', 'normal', 'hard'];
+const ROLES: readonly Role[] = ['lord', 'loyal', 'rebel', 'spy'];
 
 function isResponse(value: unknown): value is Response {
   if (typeof value !== 'object' || value === null) return false;
@@ -66,6 +69,9 @@ export function isValidSave(value: unknown): value is SaveFile {
   if (save.humanGeneralId !== undefined) {
     if (typeof save.humanGeneralId !== 'string' || !GENERAL_INDEX.has(save.humanGeneralId)) return false;
   }
+  if (save.humanRole !== undefined) {
+    if (!ROLES.includes(save.humanRole)) return false;
+  }
   if (!Array.isArray(save.responses)) return false;
   return save.responses.every(
     (entry) =>
@@ -97,6 +103,7 @@ export function createSaveFile(options: {
   difficulty: Difficulty;
   responses: SavedResponse[];
   humanGeneralId?: string;
+  humanRole?: Role;
 }): SaveFile {
   return {
     version: GAME_VERSION,
@@ -105,5 +112,6 @@ export function createSaveFile(options: {
     difficulty: options.difficulty,
     responses: options.responses.map((entry) => ({ requestId: entry.requestId, response: entry.response })),
     ...(options.humanGeneralId ? { humanGeneralId: options.humanGeneralId } : {}),
+    ...(options.humanRole ? { humanRole: options.humanRole } : {}),
   };
 }
