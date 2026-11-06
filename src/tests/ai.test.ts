@@ -2504,3 +2504,123 @@ describe('AI 寒冰劍判斷', () => {
     });
   });
 });
+
+describe('內奸：反賊佔優時避免幫反賊', () => {
+  function spyState(): GameState {
+    const state = fresh();
+    state.players.forEach((player, index) => {
+      player.role = index === 0 ? 'spy' : index === 1 ? 'lord' : index === 2 ? 'loyal' : 'rebel';
+      player.hand = [];
+    });
+    state.players[1]!.hp = 1; // 主公 1 血 → 反賊明顯佔優
+    state.turnCount = 3;
+    return state;
+  }
+
+  const passOption: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+
+  function action(player: number, options: PlayOption[]): Request {
+    return { id: 210, player, prompt: '出牌階段：請選擇行動', kind: 'action', options, context: '出牌階段' };
+  }
+
+  it('不對偏忠目標使用高成本敵意牌', () => {
+    const state = spyState();
+    state.players[0]!.hand = [card(11001, 'dismantle', 'club', 3), card(11002, 'duel', 'club', 1)];
+    const memory = createAiMemory();
+    seedBeliefScore(memory, 2, -2); // 玩家 3 偏忠
+
+    const dismantle: PlayOption = { id: 'dismantle', label: '拆→偏忠', kind: 'play', cards: [11001], targets: [2], asCard: 'dismantle' };
+    const duel: PlayOption = { id: 'duel', label: '決鬥→偏忠', kind: 'play', cards: [11002], targets: [2], asCard: 'duel' };
+    const request = action(0, [dismantle, duel, passOption]);
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('反賊未佔優時行為不變，仍可攻擊偏忠目標', () => {
+    const state = spyState();
+    state.players[1]!.hp = 4; // 主公健康
+    state.players[3]!.alive = false; // 一名反賊死亡 → 反賊不再佔優
+    state.players[0]!.hand = [card(11003, 'dismantle', 'club', 3)];
+    const memory = createAiMemory();
+    seedBeliefScore(memory, 2, -6);
+
+    const dismantle: PlayOption = { id: 'dismantle', label: '拆→偏忠', kind: 'play', cards: [11003], targets: [2], asCard: 'dismantle' };
+    const request = action(0, [dismantle, passOption]);
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'dismantle',
+    });
+  });
+
+  it('偏忠目標剩 2 血時不再補刀；3 血仍可施壓', () => {
+    const state = spyState();
+    state.players[0]!.hand = [card(11004, 'slash', 'spade', 7)];
+    const memory = createAiMemory();
+    seedBeliefScore(memory, 2, -2);
+
+    const slash: PlayOption = { id: 'slash', label: '殺→偏忠', kind: 'play', cards: [11004], targets: [2], asCard: 'slash' };
+    state.pending = action(0, [slash, passOption]);
+
+    state.players[2]!.hp = 2;
+    expect(decide(viewFor(state, 0), state.pending, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+
+    state.players[2]!.hp = 3;
+    expect(decide(viewFor(state, 0), state.pending, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash',
+    });
+  });
+
+  it('反賊佔優時優先改打偏反目標', () => {
+    const state = spyState();
+    state.players[0]!.hand = [card(11005, 'dismantle', 'club', 3)];
+    const memory = createAiMemory();
+    seedBeliefScore(memory, 2, -2); // 偏忠
+    seedBeliefScore(memory, 3, 6); // 偏反
+
+    const atLoyal: PlayOption = { id: 'dismantle:loyal', label: '拆→偏忠', kind: 'play', cards: [11005], targets: [2], asCard: 'dismantle' };
+    const atRebel: PlayOption = { id: 'dismantle:rebel', label: '拆→偏反', kind: 'play', cards: [11005], targets: [3], asCard: 'dismantle' };
+    const request = action(0, [atLoyal, atRebel, passOption]);
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'dismantle:rebel',
+    });
+  });
+
+  it('被【借刀殺人】逼著打偏忠目標時拒絕', () => {
+    const state = spyState();
+    state.players[0]!.hand = [card(11006, 'slash', 'spade', 7)];
+    const memory = createAiMemory();
+    seedBeliefScore(memory, 2, -2);
+
+    const play: ResponseOption = { id: 'play', label: '打出【殺】', kind: 'respond', cards: [11006], asCard: 'slash' };
+    const pass: ResponseOption = { id: 'pass', label: '不出', kind: 'pass', cards: [] };
+    const request: Request = {
+      id: 211,
+      player: 0,
+      prompt: '是否打出【殺】？',
+      kind: 'response',
+      need: 'sha',
+      options: [play, pass],
+      context: '借刀殺人',
+      targets: [2],
+    };
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+});

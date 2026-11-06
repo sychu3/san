@@ -1219,6 +1219,79 @@ function canRespondSlash(self: PlayerView): boolean {
   return false;
 }
 
+/** 內奸：反賊是否明顯佔優（只用公開的剩餘人數與主公血量）。 */
+function spyRebelsAhead(view: GameView, self: PlayerView): boolean {
+  if (self.role !== 'spy') return false;
+  const counts = remainingRoleCounts(view, self);
+  const lord = view.players.find((player) => player.role === 'lord');
+  if (!lord) return false;
+  const lordSide = 1 + counts.loyal;
+  const rebelSide = counts.rebel;
+  return (
+    rebelSide > lordSide ||
+    (rebelSide >= lordSide && lord.hp <= 2) ||
+    (rebelSide >= 1 && lord.hp <= 1)
+  );
+}
+
+/** 內奸專用：目標在內奸自己眼中的忠誠機率（內奸的 relation 永遠是 unknown）。 */
+function spyLoyalProbability(view: GameView, self: PlayerView, target: PlayerView): number {
+  if (target.id === self.id || !target.alive || target.role !== null) return 0;
+  if (!activeMemory) return 0;
+  return beliefProbs(view, self, activeMemory, target).loyal;
+}
+
+function isStronglyLoyalTarget(view: GameView, self: PlayerView, target: PlayerView): boolean {
+  return spyLoyalProbability(view, self, target) >= P_ALLY;
+}
+
+function isStronglyRebelTarget(view: GameView, self: PlayerView, target: PlayerView): boolean {
+  if (target.id === self.id || !target.alive || target.role !== null) return false;
+  if (!activeMemory) return false;
+  return beliefProbs(view, self, activeMemory, target).rebel >= P_ALLY;
+}
+
+/** 內奸在反賊佔優時要保留子彈的高成本敵意行動（含技能與貫石斧）。 */
+const SPY_GUARDED_SKILLS = new Set(['tuxi', 'rock_axe']);
+
+function isSpyGuardedHostile(option: { asCard?: CardName; skill?: string }): boolean {
+  if (isHighCostHostile(option)) return true;
+  return option.skill !== undefined && SPY_GUARDED_SKILLS.has(option.skill);
+}
+
+/** 敵意行動的目標是否含有強烈偏忠者。 */
+function optionHasStronglyLoyalTarget(
+  view: GameView,
+  self: PlayerView,
+  option: { targets: PlayerId[] },
+): boolean {
+  return option.targets.some((id) => {
+    const player = view.players[id];
+    return Boolean(player) && isStronglyLoyalTarget(view, self, player!);
+  });
+}
+
+/** 這一刀是否會把強烈偏忠的目標打進 1 血（含直接打死）。 */
+function slashLeavesLoyalAtOneHp(view: GameView, self: PlayerView, option: PlayOption): boolean {
+  for (const id of option.targets) {
+    const player = view.players[id];
+    if (!player || !isStronglyLoyalTarget(view, self, player)) continue;
+    const damage = slashDamageWith(self, player, option, {
+      wine: self.wine,
+      luoyi: Boolean(activeMemory && activeMemory.luoyiTurn === view.turnCount),
+    });
+    if (player.hp - damage <= 1) return true;
+  }
+  return false;
+}
+
+/** 這張牌是否屬於內奸「反賊佔優時改打偏反目標」加分的敵意行動。 */
+function isSpyHostilePlay(option: PlayOption): boolean {
+  if (isSlashOption(option)) return true;
+  if (isHighCostHostile(option)) return true;
+  return option.skill !== undefined && SPY_GUARDED_SKILLS.has(option.skill);
+}
+
 function cardValue(name: CardName): number {
   switch (name) {
     case 'peach':
@@ -1413,6 +1486,8 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
   const hasHealTarget = options.some(
     (option) => option.asCard === 'peach' && option.targets[0] !== self.id,
   );
+  // 內奸：反賊明顯佔優時要避免幫反賊拆主公方的牆。
+  const spySpareLoyal = self.role === 'spy' && spyRebelsAhead(view, self);
 
   for (const option of options) {
     let score = 0;
@@ -1435,6 +1510,12 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       if (isBoostedSlash(view, self, option) && !targetsAllConfirmed(view, self, option)) continue;
       // 決鬥自殺閘：自己 1 血且無法打出【殺】時，對手只要有一張【殺】就會送命。
       if (option.asCard === 'duel' && self.hp <= 1 && !canRespondSlash(self)) continue;
+      // 內奸的偏忠保留：反賊佔優時不用高成本牌拆偏忠目標，
+      // 也不把偏忠目標打進 1 血（含直接打死）。
+      if (spySpareLoyal) {
+        if (isSpyGuardedHostile(option) && optionHasStronglyLoyalTarget(view, self, option)) continue;
+        if (isSlashOption(option) && slashLeavesLoyalAtOneHp(view, self, option)) continue;
+      }
       // 主公第一回合：普通【殺】最多一張試探；其他敵意牌只打 confirmed。
       if (
         isLordFirstTurn(view, self) &&
@@ -1740,6 +1821,16 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
 
     if (hasHealTarget && option.asCard === 'peach' && option.targets[0] !== self.id) {
       score -= 15;
+    }
+
+    // 內奸在反賊佔優時改打偏反目標，避免只是消極保留手牌。
+    if (spySpareLoyal && option.kind === 'play' && isSpyHostilePlay(option)) {
+      const targets = option.targets
+        .map((id) => view.players[id])
+        .filter((player): player is PlayerView => Boolean(player));
+      if (targets.length > 0 && targets.every((player) => isStronglyRebelTarget(view, self, player))) {
+        score += 12;
+      }
     }
 
     score += jitter(rng);
@@ -2262,6 +2353,10 @@ function chooseResponse(
     if (victimId !== undefined) {
       const victim = view.players[victimId] ?? null;
       if (victim === null || victimId === self.id || !isConfirmedEnemy(view, self, victim)) {
+        return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
+      }
+      // 內奸：反賊佔優時，被【借刀殺人】等逼著打偏忠目標也拒絕。
+      if (self.role === 'spy' && spyRebelsAhead(view, self) && isStronglyLoyalTarget(view, self, victim)) {
         return pass ? { type: 'option', optionId: pass.id } : { type: 'pass' };
       }
       const effective = options.filter((option) => responseSlashEffective(self, victim, option));
