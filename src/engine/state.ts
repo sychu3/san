@@ -180,6 +180,13 @@ export function drawCards(
   return drawn;
 }
 
+/** 連營：失去最後一張手牌時摸一張。所有手牌移除入口都會呼叫。 */
+export function checkLianying(state: GameState, player: PlayerState): void {
+  if (state.winner || !player.alive || !hasSkill(player, 'lianying') || player.hand.length > 0) return;
+  drawCards(state, player, 1);
+  log(state, 'draw', `${generalOf(player).name} 的【連營】摸 1 張牌。`);
+}
+
 export function heal(
   state: GameState,
   player: PlayerState,
@@ -204,7 +211,9 @@ export function removeCardFromPlayer(
 ): Card {
   const handIndex = player.hand.findIndex((card) => card.id === cardId);
   if (handIndex >= 0) {
-    return player.hand.splice(handIndex, 1)[0]!;
+    const card = player.hand.splice(handIndex, 1)[0]!;
+    checkLianying(state, player);
+    return card;
   }
 
   const slots: Array<keyof PlayerState['equips']> = [
@@ -297,6 +306,7 @@ export function discardFromHand(
     if (index < 0) throw new Error(`Card ${cardId} is not in ${player.id}'s hand`);
     cards.push(player.hand.splice(index, 1)[0]!);
   }
+  if (cards.length > 0) checkLianying(state, player);
   discardCards(state, cards, reason);
   return cards;
 }
@@ -400,6 +410,9 @@ function cloneRequest(request: Request): Request {
     return { ...request, candidates: [...request.candidates] };
   }
   if (request.kind === 'chooseRevealed' || request.kind === 'chooseFrom') {
+    return { ...request, cards: request.cards.map(snapshotCard) };
+  }
+  if (request.kind === 'orderCards') {
     return { ...request, cards: request.cards.map(snapshotCard) };
   }
   return { ...request };

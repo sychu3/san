@@ -130,7 +130,7 @@ export const SKILL_META: Record<string, SkillMeta> = {
     id: 'ganglie',
     name: '剛烈',
     type: 'triggered',
-    description: '當你受到傷害後，你可以判定；若非紅桃，來源棄置一張手牌或受到 1 點傷害。',
+    description: '當你受到傷害後，你可以判定；若非紅桃，來源棄置兩張手牌或受到 1 點傷害。',
   },
   tuxi: {
     id: 'tuxi',
@@ -172,7 +172,7 @@ export const SKILL_META: Record<string, SkillMeta> = {
     id: 'guanxing',
     name: '觀星',
     type: 'triggered',
-    description: '準備階段開始時，你可以觀看牌堆頂的牌，並將任意張數移到牌堆底。',
+    description: '準備階段開始時，你可以觀看牌堆頂的牌，重新安排其順序，並可將任意張數移到牌堆底。',
   },
   kongcheng: {
     id: 'kongcheng',

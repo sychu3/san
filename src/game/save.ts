@@ -37,7 +37,10 @@ function isResponse(value: unknown): value is Response {
       return typeof (value as { optionId?: unknown }).optionId === 'string';
     case 'cards': {
       const cards = (value as { cards?: unknown }).cards;
-      return Array.isArray(cards) && cards.every((card) => typeof card === 'number');
+      if (!Array.isArray(cards) || !cards.every((card) => typeof card === 'number')) return false;
+      const bottom = (value as { bottom?: unknown }).bottom;
+      if (bottom === undefined) return true;
+      return Array.isArray(bottom) && bottom.every((card) => typeof card === 'number');
     }
     case 'players': {
       const players = (value as { players?: unknown }).players;

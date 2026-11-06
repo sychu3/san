@@ -20,6 +20,7 @@ import { ROLE_LABELS } from '../data/generals';
 import {
   advanceTurn,
   allCardsOf,
+  checkLianying,
   checkWinner,
   currentPlayer,
   discardAllCards,
@@ -343,13 +344,15 @@ function makeUse(
   };
 }
 
-function takeFromHand(_state: GameState, player: PlayerState, ids: readonly number[]): Card[] {
+function takeFromHand(state: GameState, player: PlayerState, ids: readonly number[]): Card[] {
   const cards: Card[] = [];
   for (const id of ids) {
     const index = player.hand.findIndex((card) => card.id === id);
     if (index < 0) throw new Error(`Card ${id} is not in hand`);
     cards.push(player.hand.splice(index, 1)[0]!);
   }
+  // 連營：以任何方式失去最後一張手牌都要立即檢查（使用、打出、支付代價、被拿走等）。
+  if (cards.length > 0) checkLianying(state, player);
   return cards;
 }
 
@@ -936,6 +939,34 @@ export function getPlayOptions(state: GameState, player: PlayerState): PlayOptio
     }
   }
 
+  // 激將：出牌階段，主公可令蜀勢力角色代打【殺】，再以自己為來源使用。
+  // 盟友全拒絕時記 jijiang_failed，避免同回合無限重試。
+  if (
+    hasSkill(player, 'jijiang') &&
+    !player.marks.jijiang_failed &&
+    !slashLimitReached(player) &&
+    hasJijiangAlly(state, player)
+  ) {
+    for (const target of alive) {
+      if (
+        target.id === player.id ||
+        !inAttackRange(state, player.id, target.id) ||
+        targetBlocked(target, 'slash')
+      ) {
+        continue;
+      }
+      add({
+        id: `jijiang:${target.id}`,
+        label: `激將：令蜀勢力角色代打【殺】→ ${nameOf(state, target.id)}${player.wine ? '［酒 +1］' : ''}`,
+        kind: 'play',
+        cards: [],
+        targets: [target.id],
+        asCard: 'slash',
+        skill: 'jijiang',
+      });
+    }
+  }
+
   // 丈八蛇矛：任意兩張手牌可當【殺】使用。
   // 選項只列目標；實際的兩張牌在選定目標後才詢問，避免手牌多時選項平方成長。
   if (player.equips.weapon?.name === 'serpent_spear' && !slashLimitReached(player) && player.hand.length >= 2) {
@@ -991,6 +1022,10 @@ function* resolvePlayOption(
   }
   if (option.skill === 'lijian') {
     yield* resolveLijian(state, player, option);
+    return;
+  }
+  if (option.skill === 'jijiang') {
+    yield* resolveJijiang(state, player, option);
     return;
   }
   if (option.skill === 'kurou') {
@@ -1066,8 +1101,21 @@ function* resolvePlayOption(
       targets.length > 0 ? `→ ${targets.map((target) => nameOf(state, target.id)).join('、')}` : ''
     }。`,
   );
-  for (const target of targets.length > 0 ? targets : [null]) {
-    recordEvent(state, { kind: 'use', source: player.id, target: target?.id ?? null, cardName: virtualName });
+  if (virtualName === 'collateral') {
+    // 借刀殺人：公開事件記在真正被打的受害者身上，而不是被強迫出【殺】的人。
+    const victim = targets[1] ?? targets[0] ?? null;
+    recordEvent(state, {
+      kind: 'use',
+      source: player.id,
+      target: victim?.id ?? null,
+      cardName: 'collateral',
+      skill: 'collateral',
+      targets: targets.map((target) => target.id),
+    });
+  } else {
+    for (const target of targets.length > 0 ? targets : [null]) {
+      recordEvent(state, { kind: 'use', source: player.id, target: target?.id ?? null, cardName: virtualName });
+    }
   }
 
   const meta = CARD_META[virtualName];
@@ -1156,7 +1204,6 @@ function* resolvePlayOption(
           'play',
           `${nameOf(state, player.id)} 棄置了 ${nameOf(state, target.id)} 的【${cardLabel(removed.name)}】。`,
         );
-        checkLianying(state, target);
       }
       break;
     }
@@ -1182,7 +1229,6 @@ function* resolvePlayOption(
             ? `${nameOf(state, player.id)} 獲得了 ${nameOf(state, target.id)} 的一張手牌。`
             : `${nameOf(state, player.id)} 獲得了 ${nameOf(state, target.id)} 的【${cardLabel(removed.name)}】。`,
         );
-        checkLianying(state, target);
       }
       break;
     }
@@ -1307,7 +1353,7 @@ function* resolvePlayOption(
           played.cards,
           played.name,
           [victim.id],
-        ), { bonus: 0 });
+        ), { bonus: 0, forcedBy: player.id });
       } else {
         const removed = removeCardFromPlayer(state, user, weapon.id, true);
         player.hand.push(removed);
@@ -1407,6 +1453,7 @@ function* resolveDuel(
   target: PlayerState,
   card: Card,
   reason = '決鬥',
+  forcedBy?: PlayerId,
 ): Generator<Request, void, Response> {
   let current = target;
   let other = source;
@@ -1430,6 +1477,7 @@ function* resolveDuel(
         card,
         cardName: 'duel',
         reason,
+        forcedBy,
       });
       break;
     }
@@ -1570,7 +1618,44 @@ function* resolveLijian(
     'play',
     `${nameOf(state, player.id)} 發動【離間】，${nameOf(state, first.id)} 對 ${nameOf(state, second.id)} 使用【決鬥】。`,
   );
-  yield* resolveDuel(state, first, second, cards[0]!);
+  // 公開事件：離間使用者才是主動方；後續被迫的【決鬥】傷害帶 forcedBy，
+  // 避免 AI 把被迫角力的角色誤記成對主公的主動敵意。
+  recordEvent(state, {
+    kind: 'use',
+    source: player.id,
+    target: second.id,
+    skill: 'lijian',
+    targets: [first.id, second.id],
+  });
+  yield* resolveDuel(state, first, second, cards[0]!, '決鬥', player.id);
+}
+
+/** 激將（出牌階段）：由蜀勢力角色代打【殺】，再以主公為來源使用。 */
+function* resolveJijiang(
+  state: GameState,
+  player: PlayerState,
+  option: PlayOption,
+): Generator<Request, void, Response> {
+  const target = option.targets[0] === undefined ? null : state.players[option.targets[0]] ?? null;
+  if (!target || !target.alive) return;
+
+  const played = yield* askJijiangAllies(state, player, target);
+  if (!played) {
+    // 沒有盟友回應：不消耗行動，但本回合不再重複提供，避免死循環。
+    player.marks.jijiang_failed = true;
+    return;
+  }
+
+  let bonus = 0;
+  if (player.wine) {
+    bonus = 1;
+    player.wine = false;
+    log(state, 'play', `${nameOf(state, player.id)} 的酒意令此【殺】傷害 +1。`);
+  }
+  player.slashUsed += 1;
+  player.marks.slash_played = true;
+  const use = makeUse(state, player, played.cards, played.name, [target.id], 'jijiang');
+  yield* resolveSlashTarget(state, player, target, use, { bonus });
 }
 
 /** 苦肉：失去 1 點體力，摸兩張牌；可重複使用。 */
@@ -1637,7 +1722,7 @@ function* resolveFanjian(
   // 官方：無論猜對與否，目標在【反間】全部結算完畢後獲得這張展示牌。
   const holderIndex = player.hand.findIndex((card) => card.id === shown.id);
   if (holderIndex >= 0) {
-    const [card] = player.hand.splice(holderIndex, 1);
+    const [card] = takeFromHand(state, player, [shown.id]);
     if (!card) return;
     if (target.alive) {
       target.hand.push(card);
@@ -1684,13 +1769,6 @@ function* resolveJieyin(
       });
     }
   }
-}
-
-/** 連營：失去最後一張手牌時摸一張。 */
-function checkLianying(state: GameState, player: PlayerState): void {
-  if (!player.alive || !hasSkill(player, 'lianying') || player.hand.length > 0) return;
-  drawCards(state, player, 1);
-  log(state, 'draw', `${nameOf(state, player.id)} 的【連營】摸 1 張牌。`);
 }
 
 function* askPlayers(
@@ -1742,43 +1820,75 @@ function* resolveTuxi(state: GameState, player: PlayerState): Generator<Request,
     const target = state.players[id];
     if (!target || !target.alive || target.hand.length === 0) continue;
     const index = nextUint32(state) % target.hand.length;
-    const [card] = target.hand.splice(index, 1);
-    if (!card) continue;
+    const candidate = target.hand[index];
+    if (!candidate) continue;
+    const card = removeCardFromPlayer(state, target, candidate.id, true);
     player.hand.push(card);
     log(state, 'draw', `${nameOf(state, player.id)} 發動【突襲】，獲得 ${nameOf(state, target.id)} 的一張手牌。`);
-    checkLianying(state, target);
+    recordEvent(state, { kind: 'use', source: player.id, target: target.id, skill: 'tuxi' });
   }
 }
 
-/** 觀星：觀看牌堆頂的牌，將任意張數移到牌堆底。 */
+/** 觀星：觀看牌堆頂的牌，可重新排序，也可將任意張數移到牌堆底。 */
 function* resolveGuanxing(state: GameState, player: PlayerState): Generator<Request, void, Response> {
   const aliveCount = state.players.filter((target) => target.alive).length;
   const count = Math.min(aliveCount, state.deck.length);
   if (count <= 0) return;
+  // `top` 的尾端是下一張摸到的牌；反轉後 `viewed[0]` 才是牌堆頂。
   const top = state.deck.slice(state.deck.length - count);
-  const chosen = yield* askFrom(
-    state,
-    player,
-    top,
-    0,
-    count,
-    '觀星',
-    `觀星：觀看牌堆頂 ${count} 張，選擇要移到牌堆底的牌`,
-  );
-  if (chosen.length === 0) {
+  const viewed = [...top].reverse();
+  const request: Request = {
+    ...baseRequest(
+      state,
+      player.id,
+      `觀星：安排牌堆頂 ${count} 張的順序（由上到下），可將任意張數移到牌堆底`,
+    ),
+    kind: 'orderCards',
+    cards: viewed.map((card) => ({ ...card })),
+    reason: '觀星',
+    allowBottom: true,
+  };
+  const response = yield* ask(state, request);
+  const plan = response.type === 'cards' ? validateGuanxing(response, viewed) : null;
+  if (!plan) {
     log(state, 'draw', `${nameOf(state, player.id)} 發動【觀星】，保留牌堆頂不變。`);
     return;
   }
-  const keep = top.filter((card) => !chosen.includes(card.id));
-  const moved = top.filter((card) => chosen.includes(card.id));
+  // 移除原本的牌堆頂區塊，再依序放回：bottom 在牌堆最底、top 在牌堆頂。
+  // 陣列尾端才是下一張摸到的牌，所以 top 放回時要反轉。
   state.deck.splice(state.deck.length - count, count);
-  state.deck.unshift(...moved);
-  state.deck.push(...keep);
+  state.deck.push(...[...plan.top].reverse());
+  state.deck.unshift(...plan.bottom);
   log(
     state,
     'draw',
-    `${nameOf(state, player.id)} 發動【觀星】，將 ${moved.length} 張移到牌堆底。`,
+    `${nameOf(state, player.id)} 發動【觀星】，保留 ${plan.top.length} 張在牌堆頂，將 ${plan.bottom.length} 張移到牌堆底。`,
   );
+}
+
+/** 觀星回傳的 top／bottom 是否恰好包含原牌且不重複；是則回傳對應的 Card。 */
+function validateGuanxing(
+  response: { cards: number[]; bottom?: number[] },
+  cards: readonly Card[],
+): { top: Card[]; bottom: Card[] } | null {
+  const bottomIds = response.bottom ?? [];
+  const all = [...response.cards, ...bottomIds];
+  if (all.length !== cards.length) return null;
+  if (new Set(all).size !== all.length) return null;
+  const byId = new Map(cards.map((card) => [card.id, card]));
+  const top: Card[] = [];
+  const bottom: Card[] = [];
+  for (const id of response.cards) {
+    const card = byId.get(id);
+    if (!card) return null;
+    top.push(card);
+  }
+  for (const id of bottomIds) {
+    const card = byId.get(id);
+    if (!card) return null;
+    bottom.push(card);
+  }
+  return { top, bottom };
 }
 
 /** 洛神：重複判定，黑色獲得並可繼續，紅色置於牌堆頂。 */
@@ -1825,10 +1935,27 @@ interface ShaPlay {
   skill?: string;
 }
 
+/** 是否還有其他存活的蜀勢力角色可響應【激將】。 */
+function hasJijiangAlly(state: GameState, player: PlayerState): boolean {
+  if (!hasSkill(player, 'jijiang')) return false;
+  return state.players.some(
+    (other) => other.alive && other.id !== player.id && generalOf(other).kingdom === 'shu',
+  );
+}
+
+/** 是否還有其他存活的魏勢力角色可響應【護駕】。 */
+function hasHujiaAlly(state: GameState, player: PlayerState): boolean {
+  if (!hasSkill(player, 'hujia')) return false;
+  return state.players.some(
+    (other) => other.alive && other.id !== player.id && generalOf(other).kingdom === 'wei',
+  );
+}
+
 function getShaOptions(
   state: GameState,
   player: PlayerState,
   target?: PlayerState,
+  offerLordSkill = false,
 ): ResponseOption[] {
   const options: ResponseOption[] = [];
   if (target && (!inAttackRange(state, player.id, target.id) || targetBlocked(target, 'slash'))) {
@@ -1882,38 +2009,76 @@ function getShaOptions(
       skill: 'serpent_spear',
     });
   }
+  // 激將：即使主公自己有【殺】，也讓玩家可以選擇發動主公技。
+  if (offerLordSkill && hasJijiangAlly(state, player)) {
+    options.push({
+      id: 'jijiang',
+      label: '激將：令蜀勢力角色代打【殺】',
+      kind: 'respond',
+      cards: [],
+      asCard: 'slash',
+      skill: 'jijiang',
+    });
+  }
   return options;
 }
 
-/** 技「激將」的借用入口：先問本人，再問蜀勢力角色。 */
+/** 技「激將」的借用入口：先問本人（可選自己的牌或發動激將），再問蜀勢力角色。 */
 function* askForSha(
   state: GameState,
   player: PlayerState,
   context: string,
   target?: PlayerState,
 ): Generator<Request, ShaPlay | null, Response> {
-  // 把目標帶進請求，讓被要求的角色能判斷這一刀值不值得打（例如被【借刀殺人】逼著打隊友）。
-  const own = yield* askForShaSelf(state, player, context, target, {
-    targets: target ? [target.id] : undefined,
-  });
-  if (own) return own;
-  if (hasSkill(player, 'jijiang')) {
-    for (const ally of turnOrderFrom(state, player.id).slice(1)) {
-      if (!ally.alive || generalOf(ally).kingdom !== 'shu') continue;
-      // 標明借用者與被打的目標，讓代打的角色能判斷值不值得（不幫敵人）。
-      const borrowed = yield* askForShaSelf(
-        state,
-        ally,
-        `激將：為 ${nameOf(state, player.id)} 打出`,
-        undefined,
-        { source: player.id, targets: target ? [target.id] : undefined },
-      );
-      if (borrowed) {
-        log(state, 'play', `${nameOf(state, player.id)} 的【激將】由 ${nameOf(state, ally.id)} 打出【殺】。`);
-        return borrowed;
-      }
+  let offerLordSkill = hasJijiangAlly(state, player);
+  while (true) {
+    // 把目標帶進請求，讓被要求的角色能判斷這一刀值不值得打（例如被【借刀殺人】逼著打隊友）。
+    const own = yield* askForShaSelf(
+      state,
+      player,
+      context,
+      target,
+      { targets: target ? [target.id] : undefined },
+      offerLordSkill,
+    );
+    if (own === 'jijiang') {
+      offerLordSkill = false;
+      const borrowed = yield* askJijiangAllies(state, player, target);
+      if (borrowed) return borrowed;
+      // 盟友全拒絕：回到本人選牌（若還有牌）；已用過的激將不再重複詢問。
+      continue;
     }
+    return own;
   }
+}
+
+/** 依序詢問蜀勢力角色是否替主公打出【殺】。 */
+function* askJijiangAllies(
+  state: GameState,
+  lord: PlayerState,
+  target?: PlayerState,
+): Generator<Request, ShaPlay | null, Response> {
+  if (!hasSkill(lord, 'jijiang')) return null;
+  for (const ally of turnOrderFrom(state, lord.id).slice(1)) {
+    if (!ally.alive || generalOf(ally).kingdom !== 'shu') continue;
+    // 標明借用者與被打的目標，讓代打的角色能判斷值不值得（不幫敵人）。
+    const borrowed = yield* askForShaSelf(
+      state,
+      ally,
+      `激將：為 ${nameOf(state, lord.id)} 打出`,
+      undefined,
+      { source: lord.id, targets: target ? [target.id] : undefined },
+      false,
+    );
+    if (borrowed && borrowed !== 'jijiang') {
+      log(state, 'play', `${nameOf(state, lord.id)} 的【激將】由 ${nameOf(state, ally.id)} 打出【殺】。`);
+      recordEvent(state, { kind: 'use', source: ally.id, target: lord.id, skill: 'jijiang' });
+      return borrowed;
+    }
+    // 公開日誌只說「未響應」，不洩漏該角色手上有沒有【殺】。
+    log(state, 'play', `${nameOf(state, ally.id)} 未響應【激將】。`);
+  }
+  log(state, 'play', `${nameOf(state, lord.id)} 的【激將】沒有蜀勢力角色回應。`);
   return null;
 }
 
@@ -1923,8 +2088,9 @@ function* askForShaSelf(
   context: string,
   target?: PlayerState,
   extra: ResponseExtra = {},
-): Generator<Request, ShaPlay | null, Response> {
-  const options = getShaOptions(state, player, target);
+  offerLordSkill = false,
+): Generator<Request, ShaPlay | 'jijiang' | null, Response> {
+  const options = getShaOptions(state, player, target, offerLordSkill);
   if (options.length === 0) return null;
   const chosen = yield* askResponse(
     state,
@@ -1936,6 +2102,7 @@ function* askForShaSelf(
     extra,
   );
   if (!chosen) return null;
+  if (chosen.skill === 'jijiang') return 'jijiang';
   let cards: Card[];
   if (chosen.skill === 'serpent_spear' && chosen.cards.length === 0) {
     const ids = yield* askCards(
@@ -1955,7 +2122,6 @@ function* askForShaSelf(
   if (cards.length === 0) return null;
   pushDiscard(state, cards);
   player.marks.slash_played = true;
-  checkLianying(state, player);
   const name = chosen.asCard ?? cards[0]!.name;
   recordEvent(state, { kind: 'use', source: player.id, target: target?.id ?? null, cardName: name });
   log(
@@ -1966,7 +2132,12 @@ function* askForShaSelf(
   return { card: cards[0]!, cards, name, skill: chosen.skill };
 }
 
-function getShanOptions(player: PlayerState, allowBagua: boolean): ResponseOption[] {
+function getShanOptions(
+  state: GameState,
+  player: PlayerState,
+  allowBagua: boolean,
+  offerLordSkill = false,
+): ResponseOption[] {
   const options: ResponseOption[] = [];
   for (const card of player.hand) {
     if (card.name === 'dodge') {
@@ -2014,34 +2185,73 @@ function getShanOptions(player: PlayerState, allowBagua: boolean): ResponseOptio
       skill: 'bagua',
     });
   }
+  // 護駕：即使主公自己有【閃】，也讓玩家可以選擇發動主公技。
+  if (offerLordSkill && hasHujiaAlly(state, player)) {
+    options.push({
+      id: 'hujia',
+      label: '護駕：令魏勢力角色代打【閃】',
+      kind: 'respond',
+      cards: [],
+      asCard: 'dodge',
+      skill: 'hujia',
+    });
+  }
   return options;
 }
 
-/** 技「護駕」的借用入口：先問本人，再問魏勢力角色。 */
+/** 技「護駕」的借用入口：先問本人（可選自己的牌或發動護駕），再問魏勢力角色。 */
 function* askForShan(
   state: GameState,
   target: PlayerState,
   context: string,
   allowBagua = true,
 ): Generator<Request, boolean, Response> {
-  const own = yield* askForShanSelf(state, target, context, allowBagua);
-  if (own) return true;
-  if (hasSkill(target, 'hujia')) {
-    for (const ally of turnOrderFrom(state, target.id).slice(1)) {
-      if (!ally.alive || generalOf(ally).kingdom !== 'wei') continue;
-      const borrowed = yield* askForShanSelf(
-        state,
-        ally,
-        `護駕：為 ${nameOf(state, target.id)}`,
-        false,
-        { source: target.id },
-      );
-      if (borrowed) {
-        log(state, 'play', `${nameOf(state, target.id)} 的【護駕】由 ${nameOf(state, ally.id)} 打出【閃】。`);
-        return true;
-      }
+  let offerLordSkill = hasHujiaAlly(state, target);
+  while (true) {
+    const own = yield* askForShanSelf(
+      state,
+      target,
+      context,
+      allowBagua,
+      {},
+      offerLordSkill,
+    );
+    if (own === 'hujia') {
+      offerLordSkill = false;
+      const borrowed = yield* askHujiaAllies(state, target);
+      if (borrowed) return true;
+      // 盟友全拒絕：回到本人選牌（若還有牌）；已用過的護駕不再重複詢問。
+      continue;
     }
+    return own === true;
   }
+}
+
+/** 依序詢問魏勢力角色是否替主公打出【閃】。 */
+function* askHujiaAllies(
+  state: GameState,
+  lord: PlayerState,
+): Generator<Request, boolean, Response> {
+  if (!hasSkill(lord, 'hujia')) return false;
+  for (const ally of turnOrderFrom(state, lord.id).slice(1)) {
+    if (!ally.alive || generalOf(ally).kingdom !== 'wei') continue;
+    const borrowed = yield* askForShanSelf(
+      state,
+      ally,
+      `護駕：為 ${nameOf(state, lord.id)}`,
+      false,
+      { source: lord.id },
+      false,
+    );
+    if (borrowed === true) {
+      log(state, 'play', `${nameOf(state, lord.id)} 的【護駕】由 ${nameOf(state, ally.id)} 打出【閃】。`);
+      recordEvent(state, { kind: 'use', source: ally.id, target: lord.id, skill: 'hujia' });
+      return true;
+    }
+    // 公開日誌只說「未響應」，不洩漏該角色手上有沒有【閃】。
+    log(state, 'play', `${nameOf(state, ally.id)} 未響應【護駕】。`);
+  }
+  log(state, 'play', `${nameOf(state, lord.id)} 的【護駕】沒有魏勢力角色回應。`);
   return false;
 }
 
@@ -2051,8 +2261,9 @@ function* askForShanSelf(
   context: string,
   allowBagua = true,
   extra: ResponseExtra = {},
-): Generator<Request, boolean, Response> {
-  const options = getShanOptions(target, allowBagua);
+  offerLordSkill = false,
+): Generator<Request, boolean | 'hujia', Response> {
+  const options = getShanOptions(state, target, allowBagua, offerLordSkill);
   const chosen = yield* askResponse(
     state,
     target,
@@ -2063,6 +2274,7 @@ function* askForShanSelf(
     extra,
   );
   if (!chosen) return false;
+  if (chosen.skill === 'hujia') return 'hujia';
 
   if (chosen.skill === 'bagua') {
     const judged = yield* judge(state, target, '八卦陣');
@@ -2071,7 +2283,7 @@ function* askForShanSelf(
       return true;
     }
     log(state, 'play', `${nameOf(state, target.id)} 的【八卦陣】判定失敗。`);
-    return yield* askForShanSelf(state, target, context, false, extra);
+    return yield* askForShanSelf(state, target, context, false, extra, offerLordSkill);
   }
 
   const cards = takeFromHand(state, target, chosen.cards);
@@ -2175,6 +2387,10 @@ interface SlashOptions {
   fromWeapon?: boolean;
   /** 已被【流離】轉移過，避免再次轉移。 */
   redirected?: boolean;
+  /** 此【殺】被【借刀殺人】等效果強迫；公開事件用來避免誤記被強迫者。 */
+  forcedBy?: PlayerId;
+  /** 此【殺】被【流離】轉移；公開事件把責任記在轉移者身上。 */
+  redirectedBy?: PlayerId;
 }
 
 function* resolveSlashTarget(
@@ -2319,7 +2535,6 @@ function* resolveSlashTarget(
             'play',
             `${nameOf(state, target.id)} 發動【流離】，棄置【${cardLabel(removed.name)}】。`,
           );
-          checkLianying(state, target);
         }
         // 棄牌後重新計算攻擊範圍（失去武器或坐騎可能縮短範圍）。
         const candidates = state.players.filter(
@@ -2346,12 +2561,21 @@ function* resolveSlashTarget(
               'play',
               `${nameOf(state, target.id)} 發動【流離】，將【殺】轉移給 ${nameOf(state, newTarget.id)}。`,
             );
+            // 公開事件：轉移目標是流離使用者的決定；原攻擊者不該為新目標的傷害負責。
+            recordEvent(state, {
+              kind: 'use',
+              source: target.id,
+              target: newTarget.id,
+              skill: 'liuli',
+              targets: [target.id, newTarget.id],
+            });
             yield* resolveSlashTarget(state, source, newTarget, use, {
               ...extra,
               redirected: true,
               fromWeapon: true,
               bonus,
               noDodge,
+              redirectedBy: target.id,
             });
             return;
           }
@@ -2413,7 +2637,7 @@ function* resolveSlashTarget(
 
       // 青龍偃月刀：被【閃】抵消時，可再使用一張【殺】。
       if (!extra.fromWeapon && weapon === 'green_dragon') {
-        const slashOptions = getShaOptions(state, source, target);
+        const slashOptions = getShaOptions(state, source, target, true);
         if (slashOptions.length > 0) {
           const chosen = yield* askResponse(
             state,
@@ -2484,7 +2708,6 @@ function* resolveSlashTarget(
             const removed: Card[] = [];
             for (const id of ids) removed.push(removeCardFromPlayer(state, source, id, true));
             pushDiscard(state, removed);
-            checkLianying(state, source);
             log(
               state,
               'play',
@@ -2547,9 +2770,9 @@ function* resolveSlashTarget(
           false,
         );
         if (!card) break;
+        // removeCardFromPlayer 會在失去最後一張手牌時立即結算【連營】，
+        // 才能決定是否還要棄第二張。
         discarded.push(removeCardFromPlayer(state, target, card.id, true));
-        // 失去最後一張手牌時立即結算【連營】，才能決定是否還要棄第二張。
-        checkLianying(state, target);
       }
       pushDiscard(state, discarded);
       log(
@@ -2571,6 +2794,8 @@ function* resolveSlashTarget(
     cardName: use.name,
     reason: cardLabel(use.name),
     ignoreArmor,
+    forcedBy: extra.forcedBy,
+    redirectedBy: extra.redirectedBy,
   });
 
   // 麒麟弓：造成傷害時，可棄置目標的一匹馬。
@@ -2608,7 +2833,6 @@ function* resolveSlashTarget(
           'play',
           `${nameOf(state, source.id)} 的【麒麟弓】棄置 ${nameOf(state, target.id)} 的【${cardLabel(removed.name)}】。`,
         );
-        checkLianying(state, target);
       }
     }
   }
@@ -2861,6 +3085,10 @@ interface DamageOptions {
   ignoreArmor?: boolean;
   fromChain?: boolean;
   chainSet?: Set<PlayerId>;
+  /** 被【離間】／【借刀殺人】強迫造成此傷害；公開事件用來避免誤記被強迫者。 */
+  forcedBy?: PlayerId;
+  /** 此【殺】被【流離】轉移；公開事件把責任記在轉移者身上。 */
+  redirectedBy?: PlayerId;
 }
 
 /**
@@ -2962,6 +3190,9 @@ function* dealDamage(
     target: target.id,
     cardName: damageCardName,
     amount,
+    fromChain: options.fromChain,
+    forcedBy: options.forcedBy,
+    redirectedBy: options.redirectedBy,
   });
 
   // 奸雄：受到傷害後，可獲得造成此傷害的牌。
@@ -3097,12 +3328,11 @@ function* dealDamage(
         const removed = removeCardFromPlayer(state, source, card.id, true);
         target.hand.push(removed);
         log(state, 'damage', `${nameOf(state, target.id)} 的【反饋】獲得了 ${nameOf(state, source.id)} 的一張牌。`);
-        checkLianying(state, source);
       }
     }
   }
 
-  // 剛烈：受到傷害後可判定，非紅桃則來源棄一張手牌或受 1 點傷害。
+  // 剛烈：受到傷害後可判定，非紅桃則來源棄兩張手牌或受 1 點傷害。
   if (hasSkill(target, 'ganglie') && source && source.alive && source.id !== target.id) {
     const chosen = yield* askResponse(
       state,
@@ -3116,13 +3346,13 @@ function* dealDamage(
       const judged = yield* judge(state, target, '剛烈');
       if (judged && judged.suit !== 'heart') {
         const attacker = source;
-        if (attacker.hand.length > 0) {
+        if (attacker.hand.length >= 2) {
           const pick = yield* askRequiredOption(
             state,
             attacker,
             'choice',
             [
-              { id: 'discard', label: '棄置一張手牌', kind: 'skill', cards: [], skill: 'discard' },
+              { id: 'discard', label: '棄置兩張手牌', kind: 'skill', cards: [], skill: 'discard' },
               { id: 'damage', label: '受到 1 點傷害', kind: 'skill', cards: [], skill: 'damage' },
             ],
             `剛烈：請選擇一項`,
@@ -3142,13 +3372,12 @@ function* dealDamage(
               state,
               attacker,
               attacker.hand.map((card) => card.id),
-              1,
-              1,
+              2,
+              2,
               '剛烈',
-              '選擇一張手牌棄置',
+              '選擇兩張手牌棄置',
             );
             discardFromHand(state, attacker, ids, '剛烈');
-            checkLianying(state, attacker);
           }
         } else {
           yield* dealDamage(state, {
@@ -3173,7 +3402,10 @@ function* dealDamage(
     emitTiming('dying', { state, source: sourceId, target: target.id });
     const saved = yield* runDying(state, target);
     if (!saved) {
-      yield* killPlayer(state, target, sourceId);
+      yield* killPlayer(state, target, sourceId, {
+        forcedBy: options.forcedBy,
+        redirectedBy: options.redirectedBy,
+      });
     }
   }
 
@@ -3202,6 +3434,8 @@ function* dealDamage(
         ignoreArmor: options.ignoreArmor,
         fromChain: true,
         chainSet,
+        forcedBy: options.forcedBy,
+        redirectedBy: options.redirectedBy,
       });
     }
   }
@@ -3320,6 +3554,7 @@ function* killPlayer(
   state: GameState,
   victim: PlayerState,
   killerId: PlayerId | null,
+  cause: { forcedBy?: PlayerId; redirectedBy?: PlayerId } = {},
 ): Generator<Request, void, Response> {
   if (!victim.alive) return;
 
@@ -3331,7 +3566,14 @@ function* killPlayer(
     'death',
     `${nameOf(state, victim.id)} 死亡，身份是${ROLE_LABELS[victim.role] ?? victim.role}。`,
   );
-  recordEvent(state, { kind: 'death', source: killerId, target: victim.id, role: victim.role });
+  recordEvent(state, {
+    kind: 'death',
+    source: killerId,
+    target: victim.id,
+    role: victim.role,
+    forcedBy: cause.forcedBy,
+    redirectedBy: cause.redirectedBy,
+  });
 
   discardAllCards(state, victim, `${nameOf(state, victim.id)} 死亡棄牌`, false);
 
@@ -3379,7 +3621,6 @@ function* runDiscardPhase(
     `請棄置 ${excess} 張手牌`,
   );
   discardFromHand(state, player, chosen, '棄牌階段');
-  checkLianying(state, player);
 }
 
 function equipCard(state: GameState, player: PlayerState, card: Card): void {
@@ -3424,7 +3665,6 @@ function* runPlayPhase(
     const option = yield* askAction(state, player);
     if (option.kind === 'pass') break;
     yield* resolvePlayOption(state, player, option);
-    checkLianying(state, player);
   }
 }
 

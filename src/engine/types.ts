@@ -110,6 +110,14 @@ export interface PublicEvent {
   role?: Role;
   /** 只有 kind === 'give' 才有：給牌前目標是否處於 0 手牌【空城】。 */
   brokeKongcheng?: boolean;
+  /** 多目標技能（離間、借刀殺人）的完整目標清單。 */
+  targets?: PlayerId[];
+  /** 這次效果由誰強迫（離間、借刀殺人）；被強迫者不該被當成主動敵意。 */
+  forcedBy?: PlayerId;
+  /** 這次【殺】由誰轉移目標（流離）；責任在轉移者而非原攻擊者。 */
+  redirectedBy?: PlayerId;
+  /** 是否為鐵索連環傳導傷害（間接傷害，證據力較弱）。 */
+  fromChain?: boolean;
 }
 export type Kingdom = 'wei' | 'shu' | 'wu' | 'qun';
 export type Gender = 'male' | 'female';
@@ -292,17 +300,28 @@ export type Request =
       reason: string;
     })
   | (RequestBase & {
-      /** 從指定的牌中選取（不限定手牌，例如【觀星】看牌堆頂）。 */
+      /** 從指定的牌中選取（不限定手牌）。 */
       kind: 'chooseFrom';
       cards: Card[];
       min: number;
       max: number;
       reason: string;
+    })
+  | (RequestBase & {
+      /**
+       * 安排一組牌的完整順序（例如【觀星】）。
+       * 回傳 `cards` 為牌堆頂（先摸到後摸），`bottom` 為要移到牌堆底的牌。
+       */
+      kind: 'orderCards';
+      cards: Card[];
+      reason: string;
+      /** 是否可以把牌移到牌堆底（【觀星】為 true）。 */
+      allowBottom?: boolean;
     });
 
 export type Response =
   | { type: 'option'; optionId: string }
-  | { type: 'cards'; cards: number[] }
+  | { type: 'cards'; cards: number[]; /** 只有 orderCards 會用到：要移到牌堆底的牌。 */ bottom?: number[] }
   | { type: 'players'; players: PlayerId[] }
   | { type: 'card'; card: number }
   | { type: 'pass' };

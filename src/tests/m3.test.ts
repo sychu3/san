@@ -186,6 +186,109 @@ describe('M3 首批武將技能', () => {
     expect(logged(state, '護駕')).toBe(true);
   });
 
+  it('護駕：主公手上有【閃】時仍可選擇發動護駕', () => {
+    const state = makeState(['zhang_fei', 'cao_cao', 'xiahou_dun', 'zhao_yun', 'lv_bu']);
+    state.turn = 0;
+    state.players[0]!.hand = [card(104, 'slash', 'spade', 7)];
+    state.players[1]!.hand = [card(105, 'dodge', 'heart', 2)];
+    state.players[2]!.hand = [card(106, 'dodge', 'diamond', 2)];
+
+    let sawHujia = false;
+    drive(
+      state,
+      (request) => {
+        if (request.kind === 'action' && request.player === 0) {
+          const found = request.options.find(
+            (item) => item.asCard === 'slash' && item.targets[0] === 1,
+          );
+          if (found) return option(found.id);
+        }
+        if (request.kind === 'response' && request.need === 'shan' && request.player === 1) {
+          const hujia = request.options.find((item) => item.skill === 'hujia');
+          if (hujia) {
+            sawHujia = true;
+            return option(hujia.id);
+          }
+        }
+        return baseline(request, state);
+      },
+      (current) => logged(current, '護駕'),
+    );
+
+    expect(sawHujia).toBe(true);
+    expect(logged(state, '護駕')).toBe(true);
+    // 曹操自己的【閃】保留。
+    expect(state.players[1]!.hand.map((item) => item.id)).toContain(105);
+  });
+
+  it('激將：出牌階段可令蜀勢力角色代打【殺】', () => {
+    const state = makeState(
+      ['liu_bei', 'zhang_fei', 'guan_yu', 'zhao_yun', 'lv_bu'],
+      ['lord', 'rebel', 'loyal', 'rebel', 'spy'],
+    );
+    state.turn = 0;
+    state.players[2]!.hand = [card(107, 'slash', 'spade', 7)];
+
+    let usedJijiang = false;
+    drive(
+      state,
+      (request) => {
+        if (request.kind === 'action' && request.player === 0) {
+          const jijiang = request.options.find(
+            (item) => item.skill === 'jijiang' && item.targets[0] === 1,
+          );
+          if (jijiang) {
+            usedJijiang = true;
+            return option(jijiang.id);
+          }
+        }
+        return baseline(request, state);
+      },
+      (current) => current.players[1]!.hp < current.players[1]!.maxHp,
+    );
+
+    expect(usedJijiang).toBe(true);
+    expect(logged(state, '激將')).toBe(true);
+    expect(state.players[1]!.hp).toBe(state.players[1]!.maxHp - 1);
+    expect(state.players[0]!.slashUsed).toBe(1);
+  });
+
+  it('激將：盟友沒有【殺】時回到本人出牌', () => {
+    const state = makeState(['zhang_fei', 'liu_bei', 'guan_yu', 'zhao_yun', 'lv_bu']);
+    state.turn = 0;
+    state.players[0]!.hand = [card(108, 'duel', 'club', 1)];
+    state.players[1]!.hand = [card(109, 'slash', 'spade', 7)];
+
+    let pickedJijiang = false;
+    drive(
+      state,
+      (request) => {
+        if (request.kind === 'action' && request.player === 0) {
+          const found = request.options.find(
+            (item) => item.asCard === 'duel' && item.targets[0] === 1,
+          );
+          if (found) return option(found.id);
+        }
+        if (request.kind === 'response' && request.need === 'sha' && request.player === 1) {
+          const jijiang = request.options.find((item) => item.skill === 'jijiang');
+          if (jijiang && !pickedJijiang) {
+            pickedJijiang = true;
+            return option(jijiang.id);
+          }
+        }
+        return baseline(request, state);
+      },
+      (current) =>
+        logged(current, '沒有蜀勢力角色回應') &&
+        current.players[0]!.hp < current.players[0]!.maxHp,
+      4000,
+    );
+
+    expect(pickedJijiang).toBe(true);
+    // 劉備最後用自己的【殺】贏得決鬥。
+    expect(state.players[1]!.hp).toBe(state.players[1]!.maxHp);
+  });
+
   it('仁德：交給兩張牌後回復 1 點體力', () => {
     const state = makeState(['liu_bei', 'zhang_fei', 'guan_yu', 'zhao_yun', 'lv_bu']);
     state.players[0]!.hp = 2;

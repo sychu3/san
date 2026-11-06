@@ -218,6 +218,76 @@ describe('M3 第二批武將技能（判定與傷害）', () => {
     expect(state.players[1]!.hp).toBe(state.players[1]!.maxHp - 1);
   });
 
+  it('剛烈：來源有兩張手牌時可選擇棄兩張', () => {
+    const state = makeState(['xiahou_dun', 'zhang_fei', 'guan_yu', 'zhao_yun', 'lv_bu']);
+    state.turn = 1;
+    state.players[1]!.hand = [card(122, 'slash', 'spade', 7)];
+    state.deck[state.deck.length - 3] = card(123, 'dodge', 'spade', 5);
+
+    drive(
+      state,
+      (request, current) => {
+        if (request.kind === 'action' && request.player === 1) {
+          const found = request.options.find(
+            (item) => item.asCard === 'slash' && item.targets[0] === 0,
+          );
+          if (found) return option(found.id);
+        }
+        if (request.kind === 'response' && request.need === 'choice') {
+          const ganglie = request.options.find((item) => item.skill === 'ganglie');
+          if (ganglie) return option(ganglie.id);
+          const discard = request.options.find((item) => item.skill === 'discard');
+          if (discard) return option(discard.id);
+        }
+        if (request.kind === 'chooseCards' && request.reason === '剛烈') {
+          expect(request.min).toBe(2);
+          expect(request.max).toBe(2);
+          return { type: 'cards', cards: request.cards.slice(0, 2) };
+        }
+        return baseline(request, current);
+      },
+      (current) => current.players[1]!.hand.length === 0 && logged(current, '剛烈'),
+    );
+
+    expect(state.players[1]!.hand).toHaveLength(0);
+    expect(state.players[1]!.hp).toBe(state.players[1]!.maxHp);
+  });
+
+  it('剛烈：來源只有一張手牌時直接受到 1 點傷害', () => {
+    const state = makeState(['xiahou_dun', 'xu_chu', 'guan_yu', 'zhao_yun', 'lv_bu']);
+    state.turn = 1;
+    state.players[1]!.hand = [card(124, 'slash', 'spade', 7)];
+    state.deck[state.deck.length - 2] = card(125, 'dodge', 'spade', 5);
+
+    let discardPrompt = false;
+    drive(
+      state,
+      (request, current) => {
+        if (request.kind === 'response' && request.need === 'choice') {
+          const luoyi = request.options.find((item) => item.skill === 'luoyi');
+          if (luoyi) return option(luoyi.id);
+          const ganglie = request.options.find((item) => item.skill === 'ganglie');
+          if (ganglie) return option(ganglie.id);
+        }
+        if (request.kind === 'action' && request.player === 1) {
+          const found = request.options.find(
+            (item) => item.asCard === 'slash' && item.targets[0] === 0,
+          );
+          if (found) return option(found.id);
+        }
+        if (request.kind === 'chooseCards' && request.reason === '剛烈') {
+          discardPrompt = true;
+        }
+        return baseline(request, current);
+      },
+      (current) => current.players[1]!.hp < current.players[1]!.maxHp && logged(current, '剛烈'),
+    );
+
+    // 裸衣只摸 1 張，出【殺】後剩 1 張手牌 → 不能棄 2 張，直接受傷。
+    expect(discardPrompt).toBe(false);
+    expect(state.players[1]!.hp).toBe(state.players[1]!.maxHp - 1);
+  });
+
   it('遺計：觀看牌堆頂兩張並可分配給其他角色', () => {
     const state = makeState(['guo_jia', 'zhang_fei', 'guan_yu', 'zhao_yun', 'lv_bu']);
     state.turn = 1;
@@ -519,7 +589,7 @@ describe('M3 第二批武將技能（鎖定與時機）', () => {
     expect(state.players[0]!.hp).toBe(state.players[0]!.maxHp);
   });
 
-  it('觀星：將選定的牌移到牌堆底', () => {
+  it('觀星：可重新安排牌堆頂的完整順序', () => {
     const state = makeState(['zhuge_liang', 'guan_yu', 'zhao_yun', 'lv_bu', 'diao_chan']);
     state.deck = Array.from({ length: 5 }, (_, index) =>
       card(8000 + index, 'dodge', 'heart', (index + 1) as Card['rank']),
@@ -528,17 +598,66 @@ describe('M3 第二批武將技能（鎖定與時機）', () => {
     drive(
       state,
       (request, current) => {
-        if (request.kind === 'chooseFrom' && request.reason === '觀星') {
-          return { type: 'cards', cards: [8004] };
+        if (request.kind === 'orderCards' && request.reason === '觀星') {
+          // 回傳順序＝由先摸到後摸；第一個 8004 會是下一張摸到的牌。
+          expect(request.cards.map((item) => item.id)).toEqual([8004, 8003, 8002, 8001, 8000]);
+          return { type: 'cards', cards: [8004, 8000, 8003, 8002, 8001] };
         }
         return baseline(request, current);
       },
       (_current, request) => request.kind === 'action' && request.player === 0,
     );
 
-    // 8004 被移到牌堆底（陣列前端）。
-    expect(state.deck[0]!.id).toBe(8004);
+    // 摸牌階段實際先摸到 8004、再摸到 8000。
+    expect(state.players[0]!.hand.map((item) => item.id)).toEqual([8004, 8000]);
     expect(logged(state, '觀星')).toBe(true);
+  });
+
+  it('觀星：可將任意張數移到牌堆底', () => {
+    const state = makeState(['zhuge_liang', 'guan_yu', 'zhao_yun', 'lv_bu', 'diao_chan']);
+    state.deck = Array.from({ length: 10 }, (_, index) =>
+      card(8000 + index, 'dodge', 'heart', ((index % 13) + 1) as Card['rank']),
+    );
+
+    drive(
+      state,
+      (request, current) => {
+        if (request.kind === 'orderCards' && request.reason === '觀星') {
+          // 牌堆頂 5 張為 8005..8009（下一張是 8009）。
+          // 只留 8009 在頂，其餘移到堆底。
+          expect(request.cards.map((item) => item.id)).toEqual([8009, 8008, 8007, 8006, 8005]);
+          return { type: 'cards', cards: [8009], bottom: [8005, 8006, 8007, 8008] };
+        }
+        return baseline(request, current);
+      },
+      (_current, request) => request.kind === 'action' && request.player === 0,
+    );
+
+    // 摸 8009 後，下面接著的是原本未觀看的 8004（不是被移到底的 8005..8008）。
+    expect(state.players[0]!.hand.map((item) => item.id)).toEqual([8009, 8004]);
+    expect(state.deck[0]!.id).toBe(8005);
+  });
+
+  it('觀星：回傳非法順序時保留原牌堆', () => {
+    const state = makeState(['zhuge_liang', 'guan_yu', 'zhao_yun', 'lv_bu', 'diao_chan']);
+    state.deck = Array.from({ length: 5 }, (_, index) =>
+      card(8100 + index, 'dodge', 'heart', (index + 1) as Card['rank']),
+    );
+
+    drive(
+      state,
+      (request, current) => {
+        if (request.kind === 'orderCards' && request.reason === '觀星') {
+          // 少一張、重複一張 → 非法。
+          return { type: 'cards', cards: [8104, 8104, 8103, 8102, 8101] };
+        }
+        return baseline(request, current);
+      },
+      (_current, request) => request.kind === 'action' && request.player === 0,
+    );
+
+    // 非法回應不改變原順序：先摸 8104、再摸 8103。
+    expect(state.players[0]!.hand.map((item) => item.id)).toEqual([8104, 8103]);
   });
 
   it('洛神：黑色判定牌入手並可重複，紅色置於牌堆頂', () => {
@@ -577,6 +696,66 @@ describe('M3 第二批武將技能（鎖定與時機）', () => {
     );
     expect(state.players[0]!.hand.length).toBeGreaterThanOrEqual(1);
     expect(logged(state, '連營')).toBe(true);
+  });
+
+  it('連營：他人回合以最後一張【無懈可擊】取消錦囊後摸一張', () => {
+    const state = makeState(['lu_xun', 'zhang_fei', 'guan_yu', 'zhao_yun', 'lv_bu']);
+    state.turn = 1;
+    state.players[1]!.hand = [card(272, 'dismantle', 'club', 6)];
+    state.players[0]!.hand = [card(273, 'nullification', 'club', 7)];
+
+    drive(
+      state,
+      (request, current) => {
+        if (request.kind === 'action' && request.player === 1) {
+          const found = request.options.find(
+            (item) => item.asCard === 'dismantle' && item.targets[0] === 0,
+          );
+          if (found) return option(found.id);
+        }
+        if (request.kind === 'response' && request.need === 'wuxie' && request.player === 0) {
+          const wuxie = request.options.find((item) => item.asCard === 'nullification');
+          if (wuxie) return option(wuxie.id);
+        }
+        return baseline(request, current);
+      },
+      (current) => logged(current, '連營'),
+      4000,
+    );
+
+    expect(logged(state, '連營')).toBe(true);
+    expect(state.players[0]!.hand).toHaveLength(1);
+  });
+
+  it('連營：以最後一張【酒】自救後摸一張', () => {
+    const state = makeState(['lu_xun', 'zhang_fei', 'guan_yu', 'zhao_yun', 'lv_bu']);
+    state.turn = 1;
+    state.players[0]!.hp = 1;
+    state.players[1]!.hand = [card(274, 'slash', 'spade', 7)];
+    state.players[0]!.hand = [card(275, 'wine', 'spade', 9)];
+
+    drive(
+      state,
+      (request, current) => {
+        if (request.kind === 'action' && request.player === 1) {
+          const found = request.options.find(
+            (item) => item.asCard === 'slash' && item.targets[0] === 0,
+          );
+          if (found) return option(found.id);
+        }
+        if (request.kind === 'response' && request.need === 'peach' && request.player === 0) {
+          const wine = request.options.find((item) => item.asCard === 'wine');
+          if (wine) return option(wine.id);
+        }
+        return baseline(request, current);
+      },
+      (current) => logged(current, '連營'),
+      4000,
+    );
+
+    expect(logged(state, '連營')).toBe(true);
+    expect(state.players[0]!.hp).toBe(1);
+    expect(state.players[0]!.hand).toHaveLength(1);
   });
 
   it('梟姬：失去裝備區的牌時摸兩張', () => {

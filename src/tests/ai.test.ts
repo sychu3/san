@@ -685,6 +685,69 @@ describe('技能與牌只對合理目標使用', () => {
     });
   });
 
+  it('激將／護駕：主公沒有自己的牌時會選擇發動主公技', () => {
+    const state = fresh();
+
+    const shaRequest: Request = {
+      id: 9500,
+      player: 1,
+      prompt: '是否打出【殺】？',
+      kind: 'response',
+      need: 'sha',
+      context: '決鬥',
+      options: [
+        { id: 'jijiang', label: '激將', kind: 'respond', cards: [], asCard: 'slash', skill: 'jijiang' },
+        { id: 'pass', label: '不出', kind: 'pass', cards: [] },
+      ],
+    };
+    state.pending = shaRequest;
+    expect(decide(viewFor(state, 1), shaRequest, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'jijiang',
+    });
+
+    const shanRequest: Request = {
+      id: 9501,
+      player: 1,
+      prompt: '是否打出【閃】？',
+      kind: 'response',
+      need: 'shan',
+      context: '【殺】',
+      options: [
+        { id: 'hujia', label: '護駕', kind: 'respond', cards: [], asCard: 'dodge', skill: 'hujia' },
+        { id: 'pass', label: '不出', kind: 'pass', cards: [] },
+      ],
+    };
+    state.pending = shanRequest;
+    expect(decide(viewFor(state, 1), shanRequest, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'hujia',
+    });
+  });
+
+  it('激將：主公手上有【殺】時優先使用自己的牌', () => {
+    const state = fresh();
+    state.players[1]!.hand = [card(9510, 'slash', 'spade', 7)];
+    const request: Request = {
+      id: 9511,
+      player: 1,
+      prompt: '是否打出【殺】？',
+      kind: 'response',
+      need: 'sha',
+      context: '決鬥',
+      options: [
+        { id: 'sha:9510', label: '打出【殺】', kind: 'respond', cards: [9510], asCard: 'slash' },
+        { id: 'jijiang', label: '激將', kind: 'respond', cards: [], asCard: 'slash', skill: 'jijiang' },
+        { id: 'pass', label: '不出', kind: 'pass', cards: [] },
+      ],
+    };
+    state.pending = request;
+    expect(decide(viewFor(state, 1), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'sha:9510',
+    });
+  });
+
   it('公開事件：朝主公出【殺】（即使被閃掉）也算敵意證據', () => {
     const state = fresh();
     state.publicEvents = [
@@ -1111,6 +1174,162 @@ describe('技能與牌只對合理目標使用', () => {
     const response = decide(viewFor(state, 0), request, { rngState: 3 });
     if (response.type !== 'cards') throw new Error('expected cards');
     expect(response.cards.length).toBe(2);
+  });
+
+  it('仁德：低血且只有兩張手牌時，給兩張湊到第 2 張回血', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hp = 2;
+    state.players[0]!.hand = [card(8831, 'slash', 'spade', 7), card(8832, 'wine', 'spade', 9)];
+    state.players[1]!.hand = [];
+
+    const request: Request = {
+      id: 883,
+      player: 0,
+      prompt: '選擇要交給 玩家2 的手牌（可多選）',
+      kind: 'chooseCards',
+      cards: [8831, 8832],
+      min: 1,
+      max: 2,
+      reason: '仁德',
+      skill: 'rende',
+      target: 1,
+    };
+    state.pending = request;
+    const response = decide(viewFor(state, 0), request, { rngState: 3 });
+    if (response.type !== 'cards') throw new Error('expected cards');
+    expect(response.cards).toHaveLength(2);
+  });
+
+  it('仁德：一般情況不送【閃】、【桃】等高價值牌', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.hand = [
+      card(8841, 'slash', 'spade', 7),
+      card(8842, 'dodge', 'heart', 2),
+      card(8843, 'peach', 'heart', 3),
+    ];
+    state.players[1]!.hand = [card(8844, 'dodge'), card(8845, 'dodge')];
+
+    const request: Request = {
+      id: 884,
+      player: 0,
+      prompt: '選擇要交給 玩家2 的手牌（可多選）',
+      kind: 'chooseCards',
+      cards: [8841, 8842, 8843],
+      min: 1,
+      max: 3,
+      reason: '仁德',
+      skill: 'rende',
+      target: 1,
+    };
+    state.pending = request;
+    const response = decide(viewFor(state, 0), request, { rngState: 3 });
+    if (response.type !== 'cards') throw new Error('expected cards');
+    // 只有【殺】是可送出的低價值牌，【閃】與【桃】留在手上。
+    expect(response.cards).toEqual([8841]);
+  });
+
+  it('觀星：AI 把高價值牌排在牌堆頂', () => {
+    const state = fresh();
+    const request: Request = {
+      id: 885,
+      player: 0,
+      prompt: '觀星：安排牌堆頂的順序',
+      kind: 'orderCards',
+      reason: '觀星',
+      cards: [card(8851, 'slash', 'spade', 7), card(8852, 'peach', 'heart', 3), card(8853, 'wine', 'spade', 9)],
+    };
+    state.pending = request;
+    const response = decide(viewFor(state, 0), request, { rngState: 1 });
+    // 桃 100 > 殺 40 > 酒 35。
+    expect(response).toEqual({ type: 'cards', cards: [8852, 8851, 8853] });
+  });
+
+  it('觀星：有【閃電】時優先避免黑桃 2–9', () => {
+    const state = fresh();
+    state.players[0]!.generalId = 'zhuge_liang';
+    state.players[0]!.judgeZone = [card(8871, 'lightning', 'spade', 1)];
+    const request: Request = {
+      id: 887,
+      player: 0,
+      prompt: '觀星：安排牌堆頂的順序',
+      kind: 'orderCards',
+      reason: '觀星',
+      allowBottom: true,
+      cards: [card(8872, 'slash', 'spade', 7), card(8873, 'peach', 'heart', 3)],
+    };
+    state.pending = request;
+    const response = decide(viewFor(state, 0), request, { rngState: 1 });
+    // 黑桃 7 會觸發閃電；紅桃桃不會 → 桃必須是第一張判定牌。
+    expect(response).toEqual({ type: 'cards', cards: [8873, 8872] });
+  });
+
+  it('觀星：整疊都會觸發【閃電】時全部移堆底賭未知牌', () => {
+    const state = fresh();
+    state.players[0]!.generalId = 'zhuge_liang';
+    state.players[0]!.judgeZone = [card(8881, 'lightning', 'spade', 1)];
+    const request: Request = {
+      id: 888,
+      player: 0,
+      prompt: '觀星：安排牌堆頂的順序',
+      kind: 'orderCards',
+      reason: '觀星',
+      allowBottom: true,
+      cards: [card(8882, 'slash', 'spade', 2), card(8883, 'dodge', 'spade', 7)],
+    };
+    state.pending = request;
+    const response = decide(viewFor(state, 0), request, { rngState: 1 });
+    expect(response).toEqual({ type: 'cards', cards: [], bottom: [8882, 8883] });
+  });
+
+  it('觀星：有【樂不思蜀】時把紅桃留在牌堆頂', () => {
+    const state = fresh();
+    state.players[0]!.generalId = 'zhuge_liang';
+    state.players[0]!.judgeZone = [card(8891, 'indulgence', 'spade', 6)];
+    const request: Request = {
+      id: 889,
+      player: 0,
+      prompt: '觀星：安排牌堆頂的順序',
+      kind: 'orderCards',
+      reason: '觀星',
+      allowBottom: true,
+      cards: [card(8892, 'slash', 'club', 7), card(8893, 'dodge', 'heart', 2)],
+    };
+    state.pending = request;
+    const response = decide(viewFor(state, 0), request, { rngState: 1 });
+    // 紅桃【閃】排在牌堆頂第一張，樂不思蜀判定成功（不跳過出牌階段）。
+    expect(response).toEqual({ type: 'cards', cards: [8893, 8892] });
+  });
+
+  it('剛烈：手牌少且血量安全時寧可受傷保牌', () => {
+    const state = fresh();
+    state.players[0]!.hp = 4;
+    state.players[0]!.hand = [card(8861, 'slash', 'spade', 7), card(8862, 'dodge', 'heart', 2)];
+    const request: Request = {
+      id: 886,
+      player: 0,
+      prompt: '剛烈：請選擇一項',
+      kind: 'response',
+      need: 'choice',
+      context: '剛烈',
+      options: [
+        { id: 'discard', label: '棄置兩張手牌', kind: 'skill', cards: [], skill: 'discard' },
+        { id: 'damage', label: '受到 1 點傷害', kind: 'skill', cards: [], skill: 'damage' },
+      ],
+    };
+    state.pending = request;
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'damage',
+    });
+
+    // 手牌 3 張 → 棄牌較划算。
+    state.players[0]!.hand.push(card(8863, 'wine', 'spade', 9));
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'discard',
+    });
   });
 
   it('仁德：破敵人 0 手牌的【空城】時只給 1 張', () => {

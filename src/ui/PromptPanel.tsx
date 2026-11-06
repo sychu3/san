@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { Card, GameView, PlayerId, Request, Response } from '../engine/types';
 import { cardLabel, isSlashCard } from '../data/cardMeta';
 import { rankLabel, suitSymbol } from '../engine/engine';
@@ -35,6 +36,45 @@ export function PromptPanel({
   onRespond,
 }: Props) {
   const self = view.players[humanId];
+  const orderRequestId = request.kind === 'orderCards' ? request.id : null;
+  const allowBottom = request.kind === 'orderCards' && request.allowBottom === true;
+  const [topOrder, setTopOrder] = useState<number[]>(() =>
+    request.kind === 'orderCards' ? request.cards.map((card) => card.id) : [],
+  );
+  const [bottomOrder, setBottomOrder] = useState<number[]>([]);
+
+  useEffect(() => {
+    if (orderRequestId === null) return;
+    if (request.kind === 'orderCards') {
+      setTopOrder(request.cards.map((card) => card.id));
+      setBottomOrder([]);
+    }
+    // 只在請求 id 改變時重置順序。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderRequestId]);
+
+  const moveWithin = (index: number, delta: number, toBottom: boolean) => {
+    const move = (current: number[]) => {
+      const target = index + delta;
+      if (target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target]!, next[index]!];
+      return next;
+    };
+    if (toBottom) setBottomOrder(move);
+    else setTopOrder(move);
+  };
+
+  const sendToBottom = (id: number) => {
+    setTopOrder((current) => current.filter((item) => item !== id));
+    setBottomOrder((current) => [...current, id]);
+  };
+
+  const sendToTop = (id: number) => {
+    setBottomOrder((current) => current.filter((item) => item !== id));
+    setTopOrder((current) => [...current, id]);
+  };
+
   const actionOptions = request.kind === 'action' ? request.options.filter((option) => option.kind !== 'pass') : [];
   const passOption = request.kind === 'action' ? request.options.find((option) => option.kind === 'pass') : undefined;
   const slashHeld = self?.hand?.some((card) => isSlashCard(card.name)) ?? false;
@@ -209,6 +249,115 @@ export function PromptPanel({
               確認選擇
             </button>
           </div>
+        </>
+      )}
+
+      {request.kind === 'orderCards' && (
+        <>
+          <p className="prompt__hint">{request.prompt}</p>
+          <p className="prompt__small">
+            牌堆頂由上到下＝先摸到後摸；判定階段會先抽最上面的牌。用箭頭調整順序。
+          </p>
+          <div className="option-grid option-grid--orders">
+            {topOrder.map((id, index) => {
+              const card = request.cards.find((item) => item.id === id);
+              if (!card) return null;
+              return (
+                <div key={id} className="option option--card option--order">
+                  <CardView card={card} compact />
+                  <span>
+                    {index + 1}. {cardLabel(card.name)} {suitSymbol(card.suit)}
+                    {rankLabel(card.rank)}
+                  </span>
+                  <span className="order-buttons">
+                    <button
+                      type="button"
+                      className="option option--order-move"
+                      disabled={index === 0}
+                      onClick={() => moveWithin(index, -1, false)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="option option--order-move"
+                      disabled={index === topOrder.length - 1}
+                      onClick={() => moveWithin(index, 1, false)}
+                    >
+                      ↓
+                    </button>
+                    {allowBottom && (
+                      <button
+                        type="button"
+                        className="option option--order-move"
+                        onClick={() => sendToBottom(id)}
+                      >
+                        到堆底
+                      </button>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {allowBottom && bottomOrder.length > 0 && (
+            <>
+              <p className="prompt__small">牌堆底（最後才會再摸到；不會進入判定）。</p>
+              <div className="option-grid option-grid--orders">
+                {bottomOrder.map((id, index) => {
+                  const card = request.cards.find((item) => item.id === id);
+                  if (!card) return null;
+                  return (
+                    <div key={id} className="option option--card option--order">
+                      <CardView card={card} compact />
+                      <span>
+                        {cardLabel(card.name)} {suitSymbol(card.suit)}
+                        {rankLabel(card.rank)}
+                      </span>
+                      <span className="order-buttons">
+                        <button
+                          type="button"
+                          className="option option--order-move"
+                          disabled={index === 0}
+                          onClick={() => moveWithin(index, -1, true)}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="option option--order-move"
+                          disabled={index === bottomOrder.length - 1}
+                          onClick={() => moveWithin(index, 1, true)}
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          className="option option--order-move"
+                          onClick={() => sendToTop(id)}
+                        >
+                          放回堆頂
+                        </button>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          <button
+            type="button"
+            className="option option--confirm"
+            onClick={() =>
+              onRespond({
+                type: 'cards',
+                cards: topOrder,
+                ...(bottomOrder.length > 0 ? { bottom: bottomOrder } : {}),
+              })
+            }
+          >
+            確認順序
+          </button>
         </>
       )}
 

@@ -102,6 +102,40 @@ describe('UI 渲染煙霧測試', () => {
     expect(html).toContain('閃電');
   });
 
+  it('PromptPanel 會顯示觀星的排序選項', () => {
+    const state = createGame({ seed: 1 });
+    const view = viewFor(state, 0);
+    const cards: Card[] = [
+      { id: 9010, name: 'peach', suit: 'heart', rank: 3 },
+      { id: 9011, name: 'dodge', suit: 'diamond', rank: 5 },
+    ];
+    const request: Request = {
+      id: 10,
+      player: 0,
+      prompt: '觀星：安排牌堆頂的順序（由上到下）',
+      kind: 'orderCards',
+      cards,
+      reason: '觀星',
+      allowBottom: true,
+    };
+    const html = renderToString(
+      <PromptPanel
+        view={view}
+        request={request}
+        humanId={0}
+        selectedCards={[]}
+        selectedPlayers={[]}
+        onTogglePlayer={() => undefined}
+        onToggleCard={() => undefined}
+        onRespond={() => undefined}
+      />,
+    );
+    expect(html).toContain('確認順序');
+    expect(html).toContain('到堆底');
+    expect(html).toContain('桃');
+    expect(html).toContain('閃');
+  });
+
   it('PromptPanel 會顯示五穀豐登的翻開牌選項', () => {
     const state = createGame({ seed: 1 });
     const view = viewFor(state, 0);

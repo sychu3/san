@@ -144,6 +144,12 @@ const SKILL_NOTE_LABELS: Record<string, string> = {
   qingnang: '青囊',
   yiji: '遺計',
   rende: '仁德',
+  lijian: '離間',
+  collateral: '借刀殺人',
+  liuli: '流離',
+  tuxi: '突襲',
+  jijiang: '激將',
+  hujia: '護駕',
 };
 
 function eventNoteLabel(event: PublicEvent): string {
@@ -557,7 +563,46 @@ function applyEvent(
   // 主公身份公開、自己不更新自己；這兩者不提供「未知者是誰」的資訊。
   if (src === null || src === selfId || src === lordId) return;
 
+  // 多目標技能：責任在發動技能的人，不在被強迫、被轉移或被拿牌的人。
+  if (event.kind === 'use' && event.skill && event.target !== null) {
+    if (event.skill === 'lijian') {
+      // 主公只要是被離間的其中一方（不論先後），都是把主公拖入決鬥。
+      const involved = event.targets ?? (event.target === null ? [] : [event.target]);
+      if (lordId !== null && involved.includes(lordId)) {
+        addEvidence(memory, src, 'hostileOnLord', EV.hostileOnLord, event.seq, '對主公使用【離間】');
+      }
+      return;
+    }
+    if (event.skill === 'collateral') {
+      if (event.target === lordId) {
+        addEvidence(memory, src, 'hostileOnLord', EV.hostileOnLord, event.seq, '【借刀殺人】令他人攻擊主公');
+      }
+      return;
+    }
+    if (event.skill === 'liuli') {
+      if (event.target === lordId) {
+        addEvidence(memory, src, 'hostileOnLord', EV.hostileOnLord, event.seq, '【流離】將【殺】轉移給主公');
+      }
+      return;
+    }
+    if (event.skill === 'tuxi') {
+      if (event.target === lordId) {
+        addEvidence(memory, src, 'damageLordWeak', EV.damageLordWeak, event.seq, '【突襲】拿走主公的手牌');
+      }
+      return;
+    }
+    if (event.skill === 'jijiang' || event.skill === 'hujia') {
+      if (event.target === lordId) {
+        const label = event.skill === 'jijiang' ? '激將' : '護駕';
+        addEvidence(memory, src, 'beneficialLord', EV.beneficialLord, event.seq, `響應【${label}】`);
+      }
+      return;
+    }
+  }
+
   if (event.kind === 'death' && event.target !== null && event.role) {
+    // 被【離間】／【借刀殺人】強迫或被【流離】轉移的死亡不是主動出手 → 不計。
+    if (event.forcedBy !== undefined || event.redirectedBy !== undefined) return;
     if (event.role === 'rebel') addEvidence(memory, src, 'killRebel', EV.killRebel, event.seq, '擊殺反賊');
     else if (event.role === 'spy') addEvidence(memory, src, 'killSpy', EV.killSpy, event.seq, '擊殺內奸');
     else if (event.role === 'loyal') {
@@ -569,6 +614,13 @@ function applyEvent(
   }
 
   if (event.kind === 'damage' && event.target === lordId) {
+    // 被強迫或被流離轉移的傷害：責任已由起始技能事件（離間／借刀／流離）記錄。
+    if (event.forcedBy !== undefined || event.redirectedBy !== undefined) return;
+    // 鐵索傳導是間接傷害 → 只給弱證據。
+    if (event.fromChain) {
+      addEvidence(memory, src, 'damageLordWeak', EV.damageLordWeak, event.seq, '鐵索連環傳導傷害');
+      return;
+    }
     // 沒有牌名的傷害多半是【剛烈】這類反傷技能，不是自願的主動敵意 → 不計。
     if (event.cardName === undefined) return;
     const group = event.cardName === 'barbarian' || event.cardName === 'arrows';
@@ -626,8 +678,12 @@ function applyEvent(
     return;
   }
 
-  if (event.kind === 'save' && event.target === lordId) {
-    addEvidence(memory, src, 'saveLord', EV.saveLord, event.seq, '瀕死時救助主公');
+  if (event.kind === 'save' && event.target !== null) {
+    if (event.target === lordId) {
+      addEvidence(memory, src, 'saveLord', EV.saveLord, event.seq, '瀕死時救助主公');
+    } else if (looksRebel(memory, event.target)) {
+      addEvidence(memory, src, 'helpRebel', EV.helpRebel, event.seq, '瀕死時救助可疑反賊');
+    }
   }
 }
 
@@ -1745,15 +1801,48 @@ interface RendePlan {
   count: number;
 }
 
+/** 仁德不輕易送出的關鍵牌；低血急需回血時才可能動用。 */
+const RENDE_PROTECTED = new Set<CardName>([
+  'peach',
+  'peach_garden',
+  'nullification',
+  'dodge',
+  'ex_nihilo',
+]);
+
+/** 本回合已用仁德給出幾張（給滿 2 張即已回血）。 */
+function rendeGivenThisTurn(view: GameView): number {
+  if (!activeMemory || activeMemory.rendeTurn !== view.turnCount) return 0;
+  return activeMemory.rendeGiven;
+}
+
+/** 低血且尚未回血時，允許動用保護牌湊到 2 張。 */
+function rendeEmergency(self: PlayerView, given: number): boolean {
+  return self.hp < self.maxHp && given < 2 && self.hp <= 2;
+}
+
+/** 可給出的牌，依價值由低到高排序；保護牌在一般情況排在最後。 */
+function rendeGiveable(self: PlayerView, given: number): Card[] {
+  const hand = self.hand ?? [];
+  const emergency = rendeEmergency(self, given);
+  return [...hand]
+    .filter((card) => emergency || !RENDE_PROTECTED.has(card.name))
+    .sort((a, b) => cardValue(a.name) - cardValue(b.name));
+}
+
 /**
  * 【仁德】是否值得：隊友給牌、敵人空城破防、內奸控制主公血量。
+ * 同時考慮牌價值與「這回合給出的第 2 張可回血」：2 張手牌且受傷時，
+ * 低血允許把手牌給到 0 以換取 1 點體力。
  * 只使用公開資訊；未知目標預設不給。
  */
 function rendePlan(view: GameView, self: PlayerView, target: PlayerView): RendePlan {
   if (!target.alive || target.id === self.id) return { score: -50, count: 0 };
   const budget = rendeBudget(view);
-  const maxGive = Math.max(0, self.handCount - 1);
-  if (budget <= 0 || maxGive <= 0) return { score: -50, count: 0 };
+  const given = rendeGivenThisTurn(view);
+  const maxGive = self.hp <= 2 ? self.handCount : Math.max(0, self.handCount - 1);
+  const giveable = rendeGiveable(self, given);
+  if (budget <= 0 || maxGive <= 0 || giveable.length === 0) return { score: -50, count: 0 };
 
   const hasKongcheng = target.skills.includes('kongcheng') && target.handCount === 0;
   const relation = relationOf(view, self, target);
@@ -1777,12 +1866,20 @@ function rendePlan(view: GameView, self: PlayerView, target: PlayerView): RendeP
   if (relation === 'ally') {
     // 隊友的【空城】是防禦，不要主動給牌破壞。
     if (hasKongcheng) return { score: -45, count: 0 };
-    const count = Math.min(2, budget, maxGive);
+    // 一般隊友給 2 張；已給 1 張且只差 1 張回血時，不必多給。
+    const healPending = self.hp < self.maxHp && given < 2;
+    const desired = healPending && given === 1 && target.handCount > 1 ? 1 : 2;
+    const count = Math.min(desired, budget, maxGive, giveable.length);
     if (count <= 0) return { score: -50, count: 0 };
+    const cards = giveable.slice(0, count);
+    const reachesHeal = healPending && given + count >= 2;
+    const giftValue = cards.reduce((sum, card) => sum + cardValue(card.name), 0);
     let score = 30;
-    if (self.hp < self.maxHp) score += 18; // 仁德回復的是自己
+    if (reachesHeal) score += self.hp <= 2 ? 48 : 26;
     if (target.handCount <= 1) score += 8;
     if (self.role === 'loyal' && target.role === 'lord') score += 8;
+    score -= giftValue * 0.12;
+    if (count === self.handCount) score -= reachesHeal ? 4 : 14;
     return { score, count };
   }
 
@@ -2201,6 +2298,15 @@ function chooseResponse(
 
   if (request.need === 'choice') {
     const skills = options.filter((option) => option.kind === 'skill');
+    // 剛烈：棄 2 張手牌或受 1 點傷害。手牌多或再受 1 點就會瀕死時棄牌，
+    // 否則寧可吃傷害也要保住手牌。
+    if (request.context === '剛烈') {
+      const discard = skills.find((option) => option.skill === 'discard');
+      const damage = skills.find((option) => option.skill === 'damage');
+      const preferDiscard = self.hp <= 1 || self.handCount >= 3;
+      const pick = preferDiscard ? discard ?? damage : damage ?? discard;
+      if (pick) return { type: 'option', optionId: pick.id };
+    }
     const discard = skills.find((option) => option.skill === 'discard');
     const draw = skills.find((option) => option.skill === 'draw');
     if (discard || draw) {
@@ -2348,8 +2454,21 @@ function chooseCards(
   if (request.skill === 'rende') {
     const target = request.target === undefined ? null : view.players[request.target] ?? null;
     const budget = rendeBudget(view);
-    const maxGive = Math.max(0, self.handCount - 1);
-    let desired = Math.min(2, budget, maxGive, maxAvailable);
+    const given = rendeGivenThisTurn(view);
+    const maxGive = self.hp <= 2 ? self.handCount : Math.max(0, self.handCount - 1);
+    const healNeeded = self.hp < self.maxHp && given < 2 ? 2 - given : 0;
+    const desiredCount =
+      target && healNeeded === 1 && target.handCount > 1 ? 1 : target ? 2 : 1;
+    // 保護牌（桃、無懈、閃等）不主動送出；低血急需回血時才解除限制。
+    const emergency = rendeEmergency(self, given);
+    const giveableCount = emergency
+      ? maxAvailable
+      : request.cards.filter((id) => {
+          const card = hand.find((item) => item.id === id);
+          return card !== undefined && !RENDE_PROTECTED.has(card.name);
+        }).length;
+    const cap = Math.max(min, giveableCount);
+    let desired = Math.min(desiredCount, 2, budget, maxGive, maxAvailable, cap);
     if (target) {
       const hasKongcheng = target.skills.includes('kongcheng') && target.handCount === 0;
       if ((self.role === 'spy' && target.role === 'lord') || hasKongcheng) {
@@ -2357,6 +2476,13 @@ function chooseCards(
       }
     }
     const count = Math.max(min, Math.min(maxAvailable, desired));
+    const rendeSorted = [...request.cards].sort((a, b) => {
+      const cardA = hand.find((item) => item.id === a);
+      const cardB = hand.find((item) => item.id === b);
+      const protA = !emergency && cardA && RENDE_PROTECTED.has(cardA.name) ? 1 : 0;
+      const protB = !emergency && cardB && RENDE_PROTECTED.has(cardB.name) ? 1 : 0;
+      return protA - protB || (values.get(a) ?? 0) - (values.get(b) ?? 0);
+    });
     if (activeMemory) {
       if (activeMemory.rendeTurn !== view.turnCount) {
         activeMemory.rendeTurn = view.turnCount;
@@ -2364,7 +2490,7 @@ function chooseCards(
       }
       activeMemory.rendeGiven += count;
     }
-    return { type: 'cards', cards: sorted.slice(0, count) };
+    return { type: 'cards', cards: rendeSorted.slice(0, count) };
   }
 
   if (request.skill === 'zhiheng') {
@@ -2476,6 +2602,65 @@ function equipPriority(card: Card): number {
   }
 }
 
+/**
+ * 觀星：先處理自己的判定（避免【閃電】自殺、【樂不思蜀】／【兵糧寸斷】
+ * 被跳過），再依牌價值把好牌留在牌堆頂。
+ * 判定階段就在準備階段之後，且判定區由最後放入者先判定。
+ */
+function guanxingResponse(view: GameView, request: Request & { kind: 'orderCards' }): Response {
+  const self = selfOf(view);
+  const pool = [...request.cards];
+  const top: Card[] = [];
+  const bottom: Card[] = [];
+  const judgments = [...self.judgeZone].reverse().map((card) => card.name);
+
+  for (const name of judgments) {
+    if (name === 'lightning' || name === 'indulgence' || name === 'supply_shortage') {
+      const picked = pickJudgmentCard(pool, name);
+      if (!picked) {
+        // 沒有適合的牌：把剩下的全部放堆底，讓判定抽未知牌
+        // （例如【閃電】時整疊都是黑桃 2–9，硬抽必定 3 點傷害）。
+        bottom.push(...pool);
+        pool.length = 0;
+        break;
+      }
+      top.push(picked);
+      pool.splice(pool.indexOf(picked), 1);
+      continue;
+    }
+    // 不確定的判定類型：用最低價值的牌應付，保留好牌。
+    const cheapest = [...pool].sort((a, b) => cardValue(a.name) - cardValue(b.name))[0];
+    if (cheapest) {
+      top.push(cheapest);
+      pool.splice(pool.indexOf(cheapest), 1);
+    }
+  }
+
+  // 剩下的牌：高價值留在牌堆頂（自己先摸），低價值不需要特別移到底。
+  pool.sort((a, b) => cardValue(b.name) - cardValue(a.name));
+  top.push(...pool);
+
+  const response: Response = { type: 'cards', cards: top.map((card) => card.id) };
+  if (bottom.length > 0) response.bottom = bottom.map((card) => card.id);
+  return response;
+}
+
+/** 哪張牌最適合當這次判定的判定牌；沒有適合的就回傳 null（賭未知牌）。 */
+function pickJudgmentCard(pool: readonly Card[], name: CardName): Card | null {
+  const safe = pool.filter((card) => {
+    if (name === 'lightning') {
+      // 黑桃 2–9 會觸發 3 點雷電傷害。
+      return !(card.suit === 'spade' && card.rank >= 2 && card.rank <= 9);
+    }
+    if (name === 'indulgence') return card.suit === 'heart';
+    if (name === 'supply_shortage') return card.suit === 'club';
+    return true;
+  });
+  if (safe.length === 0) return null;
+  // 用價值最低的牌去判定，把好牌留給摸牌。
+  return safe.sort((a, b) => cardValue(a.name) - cardValue(b.name))[0]!;
+}
+
 export function decide(
   view: GameView,
   request: Request,
@@ -2555,8 +2740,11 @@ export function decide(
         const ranked = [...request.cards].sort((a, b) => cardValue(a.name) - cardValue(b.name));
         return { type: 'cards', cards: ranked.slice(0, request.min).map((card) => card.id) };
       }
-      // 觀星等：預設保留牌堆頂順序（不移動）。
+      // 其他 chooseFrom：保留原順序。
       return { type: 'cards', cards: request.cards.slice(0, request.min).map((card) => card.id) };
+    }
+    case 'orderCards': {
+      return guanxingResponse(view, request);
     }
     default:
       return { type: 'pass' };

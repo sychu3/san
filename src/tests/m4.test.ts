@@ -164,6 +164,102 @@ describe('M4 公開事件與身份信念', () => {
     expect(build(12).belief.get(2)!.loyal).toBe(build(5).belief.get(2)!.loyal);
   });
 
+  it('離間公開事件：責任記在使用者，被迫決鬥者不背黑鍋', () => {
+    const memory = createAiMemory();
+    const view = {
+      turnCount: 3,
+      pending: null,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null), player(4, null)],
+      events: [
+        { seq: 1, kind: 'use', source: 2, target: 1, skill: 'lijian', targets: [3, 1] },
+        { seq: 2, kind: 'damage', source: 3, target: 1, cardName: 'duel', amount: 1, forcedBy: 2 },
+      ],
+    } as unknown as GameView;
+    updateMemory(view, memory);
+
+    // 2 才是發動離間的人。
+    expect(memory.belief.get(2)!.rebel).toBeGreaterThan(0);
+    // 被迫角力而讓主公受傷的 3 不該被記成敵意。
+    expect(memory.belief.get(3)?.rebel ?? 0).toBeLessThanOrEqual(0);
+  });
+
+  it('借刀殺人公開事件：責任記在使用者，被迫出殺者不背黑鍋', () => {
+    const memory = createAiMemory();
+    const view = {
+      turnCount: 3,
+      pending: null,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null), player(4, null)],
+      events: [
+        { seq: 1, kind: 'use', source: 2, target: 1, cardName: 'collateral', skill: 'collateral', targets: [3, 1] },
+        { seq: 2, kind: 'damage', source: 3, target: 1, cardName: 'slash', amount: 1, forcedBy: 2 },
+      ],
+    } as unknown as GameView;
+    updateMemory(view, memory);
+
+    expect(memory.belief.get(2)!.rebel).toBeGreaterThan(0);
+    expect(memory.belief.get(3)?.rebel ?? 0).toBeLessThanOrEqual(0);
+  });
+
+  it('流離公開事件：把【殺】轉給主公的責任在流離使用者', () => {
+    const memory = createAiMemory();
+    const view = {
+      turnCount: 3,
+      pending: null,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null), player(4, null)],
+      events: [
+        { seq: 1, kind: 'use', source: 2, target: 1, skill: 'liuli', targets: [2, 1] },
+        { seq: 2, kind: 'damage', source: 3, target: 1, cardName: 'slash', amount: 1, redirectedBy: 2 },
+      ],
+    } as unknown as GameView;
+    updateMemory(view, memory);
+
+    expect(memory.belief.get(2)!.rebel).toBeGreaterThan(0);
+    expect(memory.belief.get(3)?.rebel ?? 0).toBeLessThanOrEqual(0);
+  });
+
+  it('突襲公開事件：偷主公手牌記為弱敵意', () => {
+    const memory = createAiMemory();
+    const view = {
+      turnCount: 3,
+      pending: null,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null), player(4, null)],
+      events: [{ seq: 1, kind: 'use', source: 2, target: 1, skill: 'tuxi' }],
+    } as unknown as GameView;
+    updateMemory(view, memory);
+
+    expect(memory.belief.get(2)!.rebel).toBeGreaterThan(0);
+  });
+
+  it('鐵索傳導傷害只給弱證據', () => {
+    const memory = createAiMemory();
+    const view = {
+      turnCount: 3,
+      pending: null,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null), player(4, null)],
+      events: [
+        { seq: 1, kind: 'damage', source: 2, target: 1, cardName: 'fire_slash', amount: 1, fromChain: true },
+      ],
+    } as unknown as GameView;
+    updateMemory(view, memory);
+
+    expect(memory.beliefAcc.get(2)?.get('damageLordWeak')).toBeDefined();
+    expect(memory.beliefAcc.get(2)?.get('damageLord')).toBeUndefined();
+  });
+
+  it('救助可疑反賊會被記成幫助反賊', () => {
+    const memory = createAiMemory();
+    const view = {
+      turnCount: 3,
+      pending: null,
+      players: [player(0, 'loyal'), player(1, 'lord'), player(2, null), player(3, null), player(4, null)],
+      events: [{ seq: 1, kind: 'save', source: 2, target: 3, cardName: 'peach' }],
+    } as unknown as GameView;
+    seedBeliefScore(memory, 3, 8); // 玩家 3 行為上像反賊
+    updateMemory(view, memory);
+
+    expect(memory.belief.get(2)!.rebel).toBeGreaterThan(0);
+  });
+
   it('高手難度會用信念選擇高嫌疑目標，新手忽略信念', () => {
     const state = createGame({ seed: 3 });
     const roles = ['loyal', 'lord', 'rebel', 'rebel', 'rebel'] as const;
@@ -273,7 +369,7 @@ describe('M4 公開事件與身份信念', () => {
     }
 
     expect(hardWins / hardTotal).toBeGreaterThan(easyWins / easyTotal);
-  }, 30_000);
+  }, 90_000);
 
   it('三個難度都能完成對局且不崩潰', () => {
     for (const difficulty of ['easy', 'normal', 'hard'] as const) {

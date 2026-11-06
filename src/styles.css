@@ -1058,6 +1058,26 @@ button.card:hover:not(:disabled) {
   color: var(--faint-gold);
 }
 
+.option--order {
+  align-items: center;
+}
+
+.order-buttons {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.option--order-move {
+  padding: 2px 8px;
+  min-height: auto;
+  font-size: 12px;
+}
+
+.option--order-move:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .error {
   border: 1px solid var(--error-line);
   background: var(--error-bg);
