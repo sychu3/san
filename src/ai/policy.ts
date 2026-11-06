@@ -1198,6 +1198,27 @@ function isEnemyOf(view: GameView, self: PlayerView, id: PlayerId | undefined): 
   return player.id !== self.id && roleEnemyScore(view, self, player) > 0;
 }
 
+/**
+ * 敵意行動可接受的目標：AI 眼中的偏友（行為上的隊友）不可攻擊。
+ * `roleEnemyScore` 仍可能因為基礎值與機率項相抵而對偏友給出正分，
+ * 因此這裡額外用 `relationOf` 擋掉。
+ */
+function isAttackable(view: GameView, self: PlayerView, target: PlayerView): boolean {
+  if (target.id === self.id || !target.alive) return false;
+  if (relationOf(view, self, target) === 'ally') return false;
+  return roleEnemyScore(view, self, target) > 0;
+}
+
+/** 是否至少有一種方式能在【決鬥】中打出【殺】（含武聖、龍膽、丈八蛇矛）。 */
+function canRespondSlash(self: PlayerView): boolean {
+  const hand = self.hand ?? [];
+  if (hand.some((card) => isSlashName(card.name))) return true;
+  if (self.skills.includes('wusheng') && hand.some((card) => isRedCard(card))) return true;
+  if (self.skills.includes('longdan') && hand.some((card) => card.name === 'dodge')) return true;
+  if (self.equips.weapon?.name === 'serpent_spear' && hand.length >= 2) return true;
+  return false;
+}
+
 function cardValue(name: CardName): number {
   switch (name) {
     case 'peach':
@@ -1412,6 +1433,8 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       if (isHighCostHostile(option) && !targetsAllConfirmed(view, self, option)) continue;
       // 酒／裸衣加持的【殺】同屬高成本打擊，只打已確認敵人。
       if (isBoostedSlash(view, self, option) && !targetsAllConfirmed(view, self, option)) continue;
+      // 決鬥自殺閘：自己 1 血且無法打出【殺】時，對手只要有一張【殺】就會送命。
+      if (option.asCard === 'duel' && self.hp <= 1 && !canRespondSlash(self)) continue;
       // 主公第一回合：普通【殺】最多一張試探；其他敵意牌只打 confirmed。
       if (
         isLordFirstTurn(view, self) &&
@@ -1487,7 +1510,8 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       if (name === 'dismantle' || name === 'snatch') {
         if (target) {
           const base = roleEnemyScore(view, self, target);
-          score += base > 0 ? 35 + base * 0.3 : -160;
+          const attackable = isAttackable(view, self, target);
+          score += attackable ? 35 + base * 0.3 : -160;
           if (target.equips.armor?.name === 'vine_armor' || target.equips.armor?.name === 'eight_diagram') {
             score += 10;
           }
@@ -1500,7 +1524,7 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
               target.equips.horseMinus,
           );
           const onlyJudgeTrick =
-            base > 0 &&
+            attackable &&
             !hasEquip &&
             target.handCount === 0 &&
             target.judgeZone.some((card) => JUDGE_TIME_TRICKS.has(card.name));
@@ -1511,7 +1535,14 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
         if (target) {
           const enemy = roleEnemyScore(view, self, target);
           const shaCount = self.hand?.filter((card) => isSlashName(card.name)).length ?? 0;
-          score += enemy > 0 ? 45 + enemy * 0.3 + shaCount * 6 : -160;
+          if (!isAttackable(view, self, target)) {
+            score -= 160;
+          } else {
+            let value = 45 + enemy * 0.3 + shaCount * 6;
+            // 沒有【殺】（含轉化）時，對手只要有一張【殺】就會贏；血量越低越不該賭。
+            if (!canRespondSlash(self)) value -= self.hp <= 2 ? 55 : 35;
+            score += value;
+          }
         }
       }
       if (name === 'barbarian' || name === 'arrows') {
@@ -1553,27 +1584,27 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
         const user = view.players[option.targets[0]!];
         const victim = view.players[option.targets[1]!];
         if (user && victim) {
-          const a = roleEnemyScore(view, self, user);
-          const b = roleEnemyScore(view, self, victim);
+          const a = isAttackable(view, self, user);
+          const b = isAttackable(view, self, victim);
           // 讓敵人打敵人最好；逼敵人打自己／隊友、或讓隊友挨刀都是幫倒忙。
-          if (a > 0 && b > 0) score += 55;
-          else if (a > 0) score -= 160;
-          else if (b > 0) score += 30;
+          if (a && b) score += 55;
+          else if (a) score -= 160;
+          else if (b) score += 30;
           else score -= 160;
         }
       }
       if (name === 'fire_attack') {
         if (target) {
           const enemy = roleEnemyScore(view, self, target);
-          score += enemy > 0 ? 45 + enemy * 0.25 : -160;
+          score += isAttackable(view, self, target) ? 45 + enemy * 0.25 : -160;
           if (target.handCount > 0) score += 8;
         }
       }
       if (name === 'indulgence') {
-        if (target) score += roleEnemyScore(view, self, target) > 0 ? 55 : -160;
+        if (target) score += isAttackable(view, self, target) ? 55 : -160;
       }
       if (name === 'supply_shortage') {
-        if (target) score += roleEnemyScore(view, self, target) > 0 ? 50 : -160;
+        if (target) score += isAttackable(view, self, target) ? 50 : -160;
       }
       if (name === 'lightning') {
         // 閃電是風險牌，血量低時不要放。
@@ -1586,8 +1617,7 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
           for (const id of option.targets) {
             const player = view.players[id];
             if (!player) continue;
-            const enemy = roleEnemyScore(view, self, player);
-            if (enemy > 0) score += player.chained ? -6 : 16;
+            if (isAttackable(view, self, player)) score += player.chained ? -6 : 16;
             else score -= 160;
           }
         }
@@ -1601,10 +1631,12 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
           const player = view.players[id];
           if (!player) continue;
           const enemy = roleEnemyScore(view, self, player);
+          const relation = relationOf(view, self, player);
           // 反賊前期唔用貴牌打未知，但【殺】是低成本試探：未知目標仍可試刀，
           // 只是價值較低，避免完全不行動令對局拖死。
-          const unknownProbe = self.role === 'rebel' && relationOf(view, self, player) === 'unknown';
-          if (player.id === self.id || (enemy <= 0 && !unknownProbe)) {
+          const unknownProbe = self.role === 'rebel' && relation === 'unknown';
+          // 偏友（行為上的隊友）一律不打，即使分數項仍然是正的。
+          if (player.id === self.id || relation === 'ally' || (enemy <= 0 && !unknownProbe)) {
             friendlyTargets += 1;
             continue;
           }

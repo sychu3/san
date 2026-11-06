@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { beliefProbs, createAiMemory, decide, seedBeliefScore, updateMemory } from '../ai/policy';
+import { beliefProbs, beliefsFor, createAiMemory, decide, seedBeliefScore, updateMemory } from '../ai/policy';
 import { createGame, viewFor } from '../engine/state';
 import { getPlayOptions, runGame } from '../engine/engine';
 import type {
@@ -1914,6 +1914,67 @@ describe('未知目標與酒／裸衣的高置信限制', () => {
     };
     state.pending = request;
     expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('決鬥：自己 1 血且無法打出【殺】時不發動', () => {
+    const state = fresh();
+    state.players[0]!.role = 'rebel';
+    state.players[1]!.role = 'lord';
+    state.players[0]!.hp = 1;
+    state.players[0]!.hand = [card(10021, 'duel', 'club', 1)];
+    state.turnCount = 3;
+
+    const duel: PlayOption = {
+      id: 'duel',
+      label: '決鬥 → 主公',
+      kind: 'play',
+      cards: [10021],
+      targets: [1],
+      asCard: 'duel',
+    };
+    const request = actionRequest(0, [duel, passOption]);
+    state.pending = request;
+
+    // 沒有【殺】時，對手只要打出一張【殺】就會直接送命 → 不賭。
+    expect(decide(viewFor(state, 0), request, { rngState: 1 })).toEqual({
+      type: 'option',
+      optionId: 'pass',
+    });
+  });
+
+  it('偏友：可攻擊目標只有偏友時，應選擇結束出牌階段', () => {
+    const state = fresh();
+    state.players.forEach((player, index) => {
+      player.role = index === 0 ? 'lord' : index === 1 ? 'rebel' : index === 2 ? 'loyal' : index === 3 ? 'spy' : 'rebel';
+      player.hand = [];
+    });
+    // 內奸與一名反賊已公開死亡，讓玩家 3 的忠誠證據能成為「偏友」。
+    state.players[3]!.alive = false;
+    state.players[4]!.alive = false;
+    state.players[0]!.hand = [card(10022, 'slash', 'spade', 7)];
+    state.turnCount = 3;
+
+    const memory = createAiMemory();
+    seedBeliefScore(memory, 2, -2);
+
+    const slash: PlayOption = {
+      id: 'slash',
+      label: '殺 → 偏友',
+      kind: 'play',
+      cards: [10022],
+      targets: [2],
+      asCard: 'slash',
+    };
+    const request = actionRequest(0, [slash, passOption]);
+    state.pending = request;
+    const view = viewFor(state, 0);
+    // 前提：玩家 3 在這個局面下確實是「偏友」。
+    expect(beliefsFor(view, memory, 0).cells.find((cell) => cell.target === 2)!.relation).toBe('ally');
+
+    expect(decide(view, request, { rngState: 1 }, memory, 'normal')).toEqual({
       type: 'option',
       optionId: 'pass',
     });
