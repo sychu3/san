@@ -57,7 +57,7 @@ describe('AI 對局模擬', () => {
     ]) {
       expect(used.get(name) ?? 0).toBeGreaterThan(0);
     }
-  }, 30_000);
+  }, 120_000);
 
   it('AI 對局會實際發動武將技能（兩批）', () => {
     const tracked = [

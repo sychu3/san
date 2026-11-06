@@ -549,10 +549,26 @@ describe('技能與牌只對合理目標使用', () => {
     }
   });
 
-  it('張遼有敵人可偷時仍會發動突襲', () => {
+  it('只有一名確認敵人有牌時不值得突襲，改為正常摸兩張（DESIGN 7.3.18）', () => {
     const state = fresh();
+    state.players[0]!.role = 'loyal';
     state.players[0]!.generalId = 'zhang_liao';
-    state.players[1]!.hand = [card(9301, 'peach', 'heart', 3)];
+    state.players[2]!.hand = [card(9304, 'dodge', 'spade', 10)];
+
+    const request = skillChoice(0, 'tuxi');
+    state.pending = request;
+    // 單一目標多半拿到場上用剩的雜牌，失去摸兩張的牌差還暴露身份。
+    for (let rngState = 1; rngState <= 40; rngState += 1) {
+      expect(decide(viewFor(state, 0), request, { rngState })).toEqual({ type: 'option', optionId: 'pass' });
+    }
+  });
+
+  it('兩名確認敵人有牌時仍會發動突襲', () => {
+    const state = fresh();
+    state.players[0]!.role = 'loyal';
+    state.players[0]!.generalId = 'zhang_liao';
+    state.players[2]!.hand = [card(9301, 'peach', 'heart', 3)];
+    state.players[3]!.hand = [card(9305, 'dodge', 'club', 8)];
 
     const request = skillChoice(0, 'tuxi');
     state.pending = request;

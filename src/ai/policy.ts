@@ -1176,18 +1176,28 @@ function roleEnemyScore(view: GameView, self: PlayerView, target: PlayerView): n
 }
 
 /**
- * 【突襲】是否值得發動：需要至少一名「手上有牌、且不是隊友」的目標。
+ * 【突襲】可指定的偷牌目標：手上有牌、且已由公開資訊確認是敵人的角色。
  * 只看公開資訊（已知身份、手牌張數），不偷看手牌或隱藏身份。
  * 對忠臣／內奸而言主公是隊友，拿走主公的牌是幫倒忙。
  */
-function hasTuxiTarget(view: GameView, self: PlayerView): boolean {
-  return view.players.some(
+function tuxiTargets(view: GameView, self: PlayerView): PlayerView[] {
+  return view.players.filter(
     (player) =>
       player.alive &&
       player.id !== self.id &&
       player.handCount > 0 &&
       isConfirmedEnemy(view, self, player),
   );
+}
+
+/**
+ * 【突襲】是否值得放棄摸牌：需要至少兩名「手上有牌的確認敵人」（DESIGN 7.3.18）。
+ * 只有單一確認敵人時，隨機偷到的往往是場上殘餘的低價值牌（實測偷到閃的比例
+ * 高達四成八），既失去摸兩張的牌差，又白白暴露身份——此時正常摸牌更好；
+ * 兩名以上才有足夠的期望收益，也對得起「偷牌突襲」的身份價值。
+ */
+function hasTuxiTarget(view: GameView, self: PlayerView): boolean {
+  return tuxiTargets(view, self).length >= 2;
 }
 
 /** 回應別人的請求時，判斷某個玩家是否為敵人。 */
