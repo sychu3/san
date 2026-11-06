@@ -1292,6 +1292,32 @@ function isSpyHostilePlay(option: PlayOption): boolean {
   return option.skill !== undefined && SPY_GUARDED_SKILLS.has(option.skill);
 }
 
+/** 主公是否仍然很健康（供反賊的收頭例外與評分加分共用）。 */
+function lordVeryHealthy(view: GameView): boolean {
+  const lord = view.players.find((player) => player.role === 'lord');
+  return Boolean(lord && lord.alive && lord.hp >= lord.maxHp - 1);
+}
+
+/**
+ * 反賊的「王健康收頭」例外（見 DESIGN 7.3.17）：主公血量仍很健康時，
+ * 反賊對 1 血隱藏目標的一張單體【殺】，即使還不能由證據斷定敵我，
+ * 也放行一刀收頭。開局後場上最多剩「1 名其他反賊、1 名忠臣、1 名內奸」，
+ * 收頭有 1/3 機率拆掉主公方戰力，換掉一次保守空過；已相信是行為隊友
+ * （偏友或已確認反賊）仍然不可攻擊。回傳適用例外的目標；不成立回傳 null。
+ */
+function rebelLethalException(view: GameView, self: PlayerView, option: PlayOption): PlayerView | null {
+  if (self.role !== 'rebel' || !isSlashOption(option)) return null;
+  if (option.targets.length !== 1 || !lordVeryHealthy(view)) return null;
+  const victim = view.players[option.targets[0]!];
+  if (!victim || !victim.alive || victim.id === self.id || victim.role !== null) return null;
+  if (relationOf(view, self, victim) === 'ally') return null;
+  // 公開死亡已能斷定「必為反賊隊友」時（忠臣與內奸均已死亡）一樣不可攻擊。
+  if (deducedRebelAlly(self, view, victim)) return null;
+  const victims = lethalVictims(view, self, option);
+  if (victims.length !== 1 || victims[0]!.id !== victim.id) return null;
+  return victim;
+}
+
 function cardValue(name: CardName): number {
   switch (name) {
     case 'peach':
@@ -1492,6 +1518,8 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
   for (const option of options) {
     let score = 0;
     const target = option.targets[0] === undefined ? null : view.players[option.targets[0]] ?? null;
+    // 反賊的「王健康收頭」例外（見上）；同時用於 L1 閘放行與加分。
+    const rebelLethal = option.kind === 'play' ? rebelLethalException(view, self, option) : null;
 
     if (option.kind === 'play') {
       // 忠臣不會傷害主公；內奸在還有其他人時傷害主公會直接讓反賊獲勝。
@@ -1502,7 +1530,8 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
       }
       // L1 致命閘：任何主動牌只要可能令「非已確認敵人」死亡（含鐵索連環傳導、
       // 群體錦囊、藤甲／白銀獅子、酒、裸衣、古錠刀等）就放棄，避免為收頭誤殺隊友。
-      if (hasUnconfirmedLethalVictim(view, self, option)) continue;
+      // 反賊的「王健康收頭」例外不在此限（見 rebelLethalException）。
+      if (hasUnconfirmedLethalVictim(view, self, option) && !rebelLethal) continue;
       // L2 高成本閘（所有身份）：需要投入多張資源或高風險的敵意牌，
       // 只打公開資訊足以斷定的敵人，不在未知目標身上浪費。
       if (isHighCostHostile(option) && !targetsAllConfirmed(view, self, option)) continue;
@@ -1731,7 +1760,12 @@ function chooseAction(view: GameView, request: Request & { kind: 'action' }, rng
             luoyi: Boolean(activeMemory && activeMemory.luoyiTurn === view.turnCount),
           });
           score += unknownProbe ? 30 : 40 + enemy * 0.25;
-          if (player.hp <= damage) score += 70;
+          if (player.hp <= damage) {
+            score += 70;
+            // 反賊王健康收頭：對隱藏目標的一擊致命額外加分，壓過「打健康主公」
+            // 或群體錦囊的一般分數，符合收頭優先的原則。
+            if (rebelLethal && rebelLethal.id === player.id) score += 35;
+          }
           if (player.handCount === 0) score += 12;
           if (player.equips.armor?.name === 'vine_armor' && name === 'fire_slash') score += 25;
           // 高手：對手已公開打出多張【閃】，推測其手上【閃】變少。

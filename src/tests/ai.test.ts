@@ -2153,6 +2153,7 @@ describe('致命閘與高成本閘（各身份）', () => {
   it('反賊：行為盟友佔住反賊名額後，其餘未知非主公視為已確認敵人', () => {
     const state = setup(['rebel', 'lord', 'loyal', 'loyal', 'loyal']);
     state.players[3]!.hp = 1;
+    state.players[1]!.hp = 2; // 主公剩 2 血：收頭例外（7.3.17）不啟動，套用 L1 致命閘
     const option = slashOption('slash:3', [3]);
     const request = actionRequest(0, [option, passOption]);
     state.pending = request;
@@ -2167,6 +2168,19 @@ describe('致命閘與高成本閘（各身份）', () => {
     const memory = createAiMemory();
     seedBeliefScore(memory, 2, 8);
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 'slash:3',
+    });
+  });
+
+  it('反賊：主公很健康時，1 血未知目標的致命【殺】不再空過（收頭例外 7.3.17）', () => {
+    const state = setup(['rebel', 'lord', 'loyal', 'loyal', 'loyal']);
+    state.players[3]!.hp = 1; // 主公 4/4 健康
+    const option = slashOption('slash:3', [3]);
+    const request = actionRequest(0, [option, passOption]);
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
       type: 'option',
       optionId: 'slash:3',
     });
@@ -2621,6 +2635,80 @@ describe('內奸：反賊佔優時避免幫反賊', () => {
     expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
       type: 'option',
       optionId: 'pass',
+    });
+  });
+});
+
+describe('反賊：王健康時優先收頭 1 血目標', () => {
+  function rebelState(): GameState {
+    const state = fresh();
+    state.players.forEach((player, index) => {
+      player.role = index === 0 ? 'rebel' : index === 1 ? 'lord' : index === 2 ? 'loyal' : 'rebel';
+      player.hand = [];
+      player.equips = { weapon: null, armor: null, horsePlus: null, horseMinus: null };
+      player.judgeZone = [];
+      player.alive = true;
+      player.hp = 4;
+      player.maxHp = 4;
+    });
+    state.turnCount = 3;
+    return state;
+  }
+
+  const passOption: PlayOption = { id: 'pass', label: '結束出牌階段', kind: 'pass', cards: [], targets: [] };
+
+  function action(player = 0, options: PlayOption[] = []): Request {
+    return { id: 220, player, prompt: '出牌階段：請選擇行動', kind: 'action', options, context: '出牌階段' };
+  }
+
+  it('主公得很健康時，1 血隱藏目標的一刀收頭優先於打主公', () => {
+    const state = rebelState();
+    state.players[2]!.hp = 1; // 忠臣僅剩 1 血
+    state.players[0]!.hand = [card(13001, 'slash', 'club', 7)];
+    const atLoyal: PlayOption = { id: 's@loyal', label: '殺→目標2', kind: 'play', cards: [13001], targets: [2], asCard: 'slash' };
+    const atLord: PlayOption = { id: 's@lord', label: '殺→主公', kind: 'play', cards: [13001], targets: [1], asCard: 'slash' };
+    const request = action(0, [atLord, atLoyal, passOption]);
+    state.pending = request;
+    const memory = createAiMemory();
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 's@loyal',
+    });
+  });
+
+  it('主公只差 2 血以上時行為不變（收頭例外不啟動）', () => {
+    const state = rebelState();
+    state.players[2]!.hp = 1;
+    state.players[1]!.hp = 2; // 主公剩 2/4：不符合「非常健康」
+    state.turnCount = 3;
+    state.players[0]!.hand = [card(13002, 'slash', 'club', 7)];
+    const atLoyal: PlayOption = { id: 's@loyal', label: '殺→目標2', kind: 'play', cards: [13002], targets: [2], asCard: 'slash' };
+    const atLord: PlayOption = { id: 's@lord', label: '殺→主公', kind: 'play', cards: [13002], targets: [1], asCard: 'slash' };
+    const request = action(0, [atLord, atLoyal, passOption]);
+    state.pending = request;
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, createAiMemory(), 'normal')).toEqual({
+      type: 'option',
+      optionId: 's@lord',
+    });
+  });
+
+  it('已相信是行為上的反賊隊友時不搶收頭', () => {
+    const state = rebelState();
+    state.players[2]!.hp = 1;
+    state.players[0]!.hand = [card(13003, 'slash', 'club', 7)];
+    const atLoyal: PlayOption = { id: 's@loyal', label: '殺→疑似隊友', kind: 'play', cards: [13003], targets: [2], asCard: 'slash' };
+    const atLord: PlayOption = { id: 's@lord', label: '殺→主公', kind: 'play', cards: [13003], targets: [1], asCard: 'slash' };
+    const request = action(0, [atLord, atLoyal, passOption]);
+    state.pending = request;
+    // 強烈的敵意證據讓玩家 2 幾乎肯定像反賊：仍不得收頭。
+    const memory = createAiMemory();
+    seedBeliefScore(memory, 2, 12);
+
+    expect(decide(viewFor(state, 0), request, { rngState: 1 }, memory, 'normal')).toEqual({
+      type: 'option',
+      optionId: 's@lord',
     });
   });
 });
